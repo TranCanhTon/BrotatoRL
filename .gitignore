@@ -1,0 +1,14 @@
+# Decompiled Brotato code (copyrighted, never upload)
+brotato-source/
+find_report.txt
+
+# Python virtual environment
+venv/
+__pycache__/
+*.pyc
+
+# Personal save backup
+save-backup/
+
+# Editor
+.vscode/
