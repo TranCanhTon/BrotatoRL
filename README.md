@@ -4,7 +4,7 @@ An AI that learns to play the real Steam version of **Brotato** with reinforceme
 
 A Godot mod inside the game sends what is happening on screen to Python, Python answers with a move, and the mod plays the rest of the game by itself (menus, level ups, shop, restarts) so training can run overnight with nobody touching anything.
 
-**Current target:** clear wave 10 reliably. Later wave 20.
+**Current target:** clear wave 12 (first boss) reliably. Later wave 20.
 
 ## Status
 
@@ -14,9 +14,9 @@ A Godot mod inside the game sends what is happening on screen to Python, Python 
 | 2. Connection | Mod and Python talk, Python controls movement, speed up, autopilot, Gymnasium env | Built. Final 30 minute test left |
 | 3. Brain | Rule bot baseline, PPO agent | Not started |
 | 4. Training | Rewards, train, watch, tune | Not started |
-| 5. Shop and higher waves | Smarter shop, wave 10 then 20 | Basic shop rules already in the autopilot |
+| 5. Shop and higher waves | Smarter shop, wave 12 then 20 | Basic shop rules already in the autopilot |
 
-Already working: with random moves, the autopilot plays full runs back to back and has cleared wave 10.
+Already working: with random moves, the autopilot plays full runs back to back and has cleared wave 10 (the old last wave).
 
 Next: run `run_random.py` for 30 minutes unattended. Phase 2 is done when its summary shows 0 runs that ended some other way.
 
@@ -97,7 +97,7 @@ All settings live in one block near the top of `mod/mod_main.gd`.
 * Character: **Well Rounded**
 * Weapon: **SMG**
 * Danger: **1**
-* The run ends on death or after clearing **wave 10**, then a new run starts with the same setup.
+* The run ends on death or after clearing **wave 12** (the first boss; wave 10 was too easy), then a new run starts with the same setup.
 
 ### Level ups
 Picks the first stat offered from this priority list, otherwise the first option:
@@ -116,8 +116,10 @@ Takes items. Recycles weapons, so weapons only come from the shop rule below.
 ### Shop
 One action every 0.25 s, in this order:
 
-1. **After wave 10:** restart the run.
-2. **Merge:** only when all 6 weapon slots are full. If two identical SMGs of the same tier exist, merge them into one higher tier SMG. That frees a slot for another SMG.
+1. **After wave 12:** restart the run.
+2. **All 6 slots full and an SMG in the shop:**
+   * if it can afford the SMG: merge two identical SMGs (same tier) into one higher tier SMG, which frees a slot, then buy the SMG
+   * if it cannot afford it: lock the SMG and leave the shop right away
 3. **Buy:**
    * Under **6 weapons**: buy the cheapest SMG it can afford.
    * At **6 weapons**: buy items that give a stat from the priority list above (Max HP, dodge, armor, ranged damage, damage, attack speed, movement speed). Items that lower any of those stats are skipped. The item whose best stat is highest in the list wins.
@@ -125,7 +127,7 @@ One action every 0.25 s, in this order:
    * After buying something, if the money left is less than what was just paid, leave the shop. Prices go up every wave, so it does not waste money on rerolls it cannot follow up on.
    * Only reroll if, after paying for the reroll, there is still enough money for that same price.
    * Before anything is bought in this visit, "that price" is what a basic SMG costs at the current wave (the game's own price formula).
-5. **Lock before leaving:** anything it would buy but cannot afford gets locked (the game's own lock button), so it is still in the shop next round. Under 6 weapons that means SMGs, at 6 weapons items with a priority stat.
+5. **Lock before leaving:** anything it would buy but cannot afford gets locked (the game's own lock button), so it is still in the shop next round: SMGs always, and at 6 weapons also items with a priority stat.
 6. Otherwise leave the shop.
 
 ### Death and restarts
@@ -142,7 +144,7 @@ Right now Python picks **random** moves, so the character hugs walls and ignores
 | Getting hit | minus 5 × (HP lost / max HP) |
 | Picking up a material (gold went up during a wave) | +0.05 per gold |
 | Clearing a wave | +3 |
-| Clearing wave 10 | +10, run ends |
+| Clearing wave 12 | +10, run ends |
 | Dying | minus 5, run ends |
 | Closer than 40 units to a wall | minus 0.02 per turn |
 
