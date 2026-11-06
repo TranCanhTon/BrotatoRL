@@ -4,7 +4,7 @@ const HOST = "127.0.0.1"
 const PORT = 9876
 const TURN_EVERY = 0.1        # game seconds between turns
 const RETRY_EVERY = 1.0       # real seconds between connection attempts
-const REPLY_TIMEOUT_MS = 3000 # give up waiting for Python after this
+const REPLY_TIMEOUT_MS = 20000 # give up waiting for Python after this (AI training pauses to learn)
 
 const N_ENEMIES = 8
 const N_BULLETS = 8
@@ -23,6 +23,8 @@ var _retry_timer = 0.0
 var _turn_timer = 0.0
 var _buffer = ""
 var _normal_ticks = 60
+var _in_wave = false   # true while turns are being taken, to notice when a wave ends
+var _wave_number = 0
 
 # ---------- autopilot settings ----------
 const AUTOPILOT_STEP_MS = 250       # real time between two autopilot clicks
@@ -86,6 +88,8 @@ func _physics_process(delta):
 
 	var main = _get_main()
 	if main == null:
+		if _in_wave:
+			_send_wave_end()
 		_release_all()
 		_set_speed(1.0)
 		_turn_timer = 0.0
@@ -104,10 +108,37 @@ func _physics_process(delta):
 		_drop_connection("send failed")
 		return
 
+	_in_wave = true
+	_wave_number = RunData.current_wave
+
 	var move = _wait_for_move()
 	if move < 0:
 		return
 	_apply_move(move)
+
+
+# Called once when turns stop. Tells Python how the wave ended:
+#   dead    = the player died (the game sets _is_wave_failed before cleaning up)
+#   aborted = the wave was left without ending (quit to menu, game closed)
+#   otherwise the wave was cleared. Python does not answer this message.
+func _send_wave_end():
+	_in_wave = false
+	var scene = get_tree().current_scene
+	var dead = false
+	var aborted = true
+	if scene != null and _runs_script(scene, SCRIPT_MAIN) and scene._cleaning_up:
+		aborted = false
+		dead = scene._is_wave_failed
+	var msg = {
+		"event": "wave_end",
+		"wave": _wave_number,
+		"dead": dead,
+		"aborted": aborted,
+		"last_wave": LAST_WAVE,
+	}
+	print("BrotatoAI: wave ", _wave_number, " ended, dead=", dead, " aborted=", aborted)
+	if _tcp.put_data((to_json(msg) + "\n").to_utf8()) != OK:
+		_drop_connection("send failed")
 
 
 # Freezes the game until Python answers. Returns the move number, or -1 on failure.
@@ -175,6 +206,7 @@ func _set_speed(speed):
 
 func _drop_connection(reason):
 	print("BrotatoAI: ", reason)
+	_in_wave = false
 	_release_all()
 	_set_speed(1.0)
 	_tcp.disconnect_from_host()
@@ -274,6 +306,7 @@ func _build_message(main):
 		"n_bullets": bullet_nodes.size(),
 		"n_materials": main._active_golds.size(),
 		"max_bullet_speed": max_speed_seen,
+		"gold": RunData.get_player_gold(0),
 	}
 	return {"obs": obs, "info": info}
 
@@ -499,9 +532,30 @@ func _ap_shop(shop):
 
 
 func _ap_leave_shop(shop, reason):
+	_ap_lock_unaffordable(shop)
 	print("BrotatoAI autopilot: leaving shop (", reason, ") with ",
 		RunData.get_player_weapons(0).size(), " weapons and ", RunData.get_player_gold(0), " gold")
 	shop._on_GoButton_pressed(0)
+
+
+# Before leaving: anything we would buy but can't afford gets locked, so it is
+# still in the shop next round (same as clicking its lock button).
+#   under MAX_WEAPONS: SMGs.  At MAX_WEAPONS: items with a priority stat.
+func _ap_lock_unaffordable(shop):
+	var want_smgs = RunData.get_player_weapons(0).size() < MAX_WEAPONS
+	var gold = RunData.get_player_gold(0)
+	for shop_item in shop._get_shop_items_container(0)._shop_items:
+		if shop_item == null or not shop_item.active or shop_item.locked or gold >= shop_item.value:
+			continue
+		var item = shop_item.item_data
+		var wanted = false
+		if want_smgs:
+			wanted = _is_weapon(item) and WEAPON_ID in str(item.my_id)
+		else:
+			wanted = not _is_weapon(item) and _item_rank(item) < 999
+		if wanted:
+			print("BrotatoAI autopilot: locking ", item.my_id, " (costs ", shop_item.value, ", have ", gold, ")")
+			shop_item.change_lock_status(true)
 
 
 # Merging (only called when all slots are full): if any SMG has an identical partner
