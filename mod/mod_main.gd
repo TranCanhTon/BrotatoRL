@@ -33,7 +33,7 @@ const CHARACTER_ID = "well_rounded"  # part of the game's id for the character
 const WEAPON_ID = "smg"              # part of the game's id for the weapon
 const DANGER = 1
 const MAX_WEAPONS = 6
-const LAST_WAVE = 10                 # restart the run after clearing this wave
+const LAST_WAVE = 12                 # restart the run after clearing this wave (12 = first boss)
 # level up: first one offered from this list wins, top to bottom.
 # names are the game's stat ids without "stat_" (see brotato-source/singletons/keys.gd)
 const LEVEL_UP_PRIORITY = [
@@ -491,7 +491,7 @@ func _is_weapon(item):
 # ---------- shop ----------
 # Shop, one action per call (called every 0.25s):
 #   1. after LAST_WAVE: restart the run
-#   2. at MAX_WEAPONS: merge two identical SMGs if possible (frees a slot)
+#   2. at MAX_WEAPONS with an SMG in the shop: merge if we can afford it, else lock it and leave
 #   3. under MAX_WEAPONS: buy an SMG. At MAX_WEAPONS: buy an item with priority stats
 #   4. money rule: after buying, leave if the money left is less than what was just paid.
 #      Reroll only if, after paying the reroll, there is still enough for that price.
@@ -504,9 +504,20 @@ func _ap_shop(shop):
 	var weapons = RunData.get_player_weapons(0).size()
 	var gold = RunData.get_player_gold(0)
 
-	# merge only when all weapon slots are full, to make room for another SMG
-	if weapons >= MAX_WEAPONS and _ap_merge_smgs(shop):
-		return
+	var items_box = shop._get_shop_items_container(0)
+
+	# All slots full and an SMG in the shop:
+	#   can afford it  -> merge two identical SMGs to free a slot (next action buys it)
+	#   can't afford it -> leave now (leaving locks it for next round)
+	if weapons >= MAX_WEAPONS:
+		var smg = _ap_find_smg(items_box, 1000000000)
+		if smg != null:
+			if gold >= smg.value:
+				if _ap_merge_smgs(shop):
+					return
+			else:
+				_ap_leave_shop(shop, "slots full, SMG costs " + str(smg.value))
+				return
 
 	var target_price = _ap_last_buy_price if _ap_last_buy_price > 0 else _basic_smg_price()
 
@@ -514,7 +525,6 @@ func _ap_shop(shop):
 		_ap_leave_shop(shop, "can't afford another one at " + str(_ap_last_buy_price))
 		return
 
-	var items_box = shop._get_shop_items_container(0)
 	var pick = _ap_find_smg(items_box, gold) if weapons < MAX_WEAPONS else _ap_find_item(items_box, gold)
 	if pick != null:
 		print("BrotatoAI autopilot: buying ", pick.item_data.my_id, " for ", pick.value)
@@ -540,25 +550,25 @@ func _ap_leave_shop(shop, reason):
 
 # Before leaving: anything we would buy but can't afford gets locked, so it is
 # still in the shop next round (same as clicking its lock button).
-#   under MAX_WEAPONS: SMGs.  At MAX_WEAPONS: items with a priority stat.
+#   SMGs always. Items with a priority stat only at MAX_WEAPONS (that's when we buy items).
 func _ap_lock_unaffordable(shop):
-	var want_smgs = RunData.get_player_weapons(0).size() < MAX_WEAPONS
+	var at_max = RunData.get_player_weapons(0).size() >= MAX_WEAPONS
 	var gold = RunData.get_player_gold(0)
 	for shop_item in shop._get_shop_items_container(0)._shop_items:
 		if shop_item == null or not shop_item.active or shop_item.locked or gold >= shop_item.value:
 			continue
 		var item = shop_item.item_data
 		var wanted = false
-		if want_smgs:
-			wanted = _is_weapon(item) and WEAPON_ID in str(item.my_id)
-		else:
-			wanted = not _is_weapon(item) and _item_rank(item) < 999
+		if _is_weapon(item):
+			wanted = WEAPON_ID in str(item.my_id)
+		elif at_max:
+			wanted = _item_rank(item) < 999
 		if wanted:
 			print("BrotatoAI autopilot: locking ", item.my_id, " (costs ", shop_item.value, ", have ", gold, ")")
 			shop_item.change_lock_status(true)
 
 
-# Merging (only called when all slots are full): if any SMG has an identical partner
+# Merging (only when all slots are full and an affordable SMG is in the shop): if any SMG has an identical partner
 # (same tier), combine them with the game's own merge.
 func _ap_merge_smgs(shop):
 	for weapon in RunData.get_player_weapons(0):
