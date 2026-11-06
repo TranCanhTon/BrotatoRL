@@ -114,8 +114,10 @@ func _physics_process(delta):
 		_drop_connection("send failed")
 		return
 
-	if not _in_wave and RunData.current_wave == 1:
-		_run_log = []   # first turn of a new run
+	if not _in_wave:
+		if RunData.current_wave == 1:
+			_run_log = []   # first turn of a new run
+		_log_wave_start(main)
 	_in_wave = true
 	_wave_number = RunData.current_wave
 
@@ -237,7 +239,17 @@ func _get_main():
 		return null
 	if main._players.size() == 0 or not is_instance_valid(main._players[0]):
 		return null
+	# wave 1 starts with the potato landing by parachute: don't freeze or speed up
+	# the game until that animation is done, or the potato can get stuck invisible
+	if _is_landing(main._players[0]):
+		return null
 	return main
+
+
+func _is_landing(player):
+	var anim = player.get("_animation_player")
+	var landing = player.get("animation_landing")
+	return anim != null and landing != null and anim.is_playing() and anim.current_animation == landing
 
 
 func _build_message(main):
@@ -721,3 +733,24 @@ func _character_stats():
 	for stat_name in REPORT_STATS:
 		stats[stat_name] = RunData.get_stat(Keys.generate_hash("stat_" + stat_name), 0)
 	return stats
+
+
+
+# First turn of every wave: note which weapons the character really has and its HP.
+# (Diagnostic for quick wave 1 deaths after a restart.)
+func _log_wave_start(main):
+	var weapon_ids = []
+	for weapon in RunData.get_player_weapons(0):
+		weapon_ids.append(str(weapon.my_id))
+	var p = main._players[0]
+	var on_player = p.current_weapons.size()
+	print("BrotatoAI: wave ", RunData.current_wave, " start, weapons ", weapon_ids,
+		" (", on_player, " on the character), hp ", p.current_stats.health, "/", p.max_stats.health,
+		", animation ", p._animation_player.current_animation, ", visible ", p.visible)
+	_run_log.append({
+		"wave": RunData.current_wave,
+		"action": "wave start",
+		"id": "%d weapons (%d on character): %s" % [weapon_ids.size(), on_player, str(weapon_ids)],
+		"price": 0,
+		"stats": {"hp": p.current_stats.health, "max_hp": p.max_stats.health},
+	})
