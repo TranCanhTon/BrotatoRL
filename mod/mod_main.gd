@@ -458,7 +458,7 @@ func _is_weapon(item):
 # ---------- shop ----------
 # Shop, one action per call (called every 0.25s):
 #   1. after LAST_WAVE: restart the run
-#   2. merge two identical SMGs if possible
+#   2. at MAX_WEAPONS: merge two identical SMGs if possible (frees a slot)
 #   3. under MAX_WEAPONS: buy an SMG. At MAX_WEAPONS: buy an item with priority stats
 #   4. money rule: after buying, leave if the money left is less than what was just paid.
 #      Reroll only if, after paying the reroll, there is still enough for that price.
@@ -468,11 +468,13 @@ func _ap_shop(shop):
 		_ap_restart_run("cleared wave %d" % RunData.current_wave)
 		return
 
-	if _ap_merge_smgs(shop):
-		return
-
 	var weapons = RunData.get_player_weapons(0).size()
 	var gold = RunData.get_player_gold(0)
+
+	# merge only when all weapon slots are full, to make room for another SMG
+	if weapons >= MAX_WEAPONS and _ap_merge_smgs(shop):
+		return
+
 	var target_price = _ap_last_buy_price if _ap_last_buy_price > 0 else _basic_smg_price()
 
 	if _ap_last_buy_price > 0 and gold < _ap_last_buy_price:
@@ -502,7 +504,8 @@ func _ap_leave_shop(shop, reason):
 	shop._on_GoButton_pressed(0)
 
 
-# Merging: if any SMG has an identical partner (same tier), combine them with the game's own merge.
+# Merging (only called when all slots are full): if any SMG has an identical partner
+# (same tier), combine them with the game's own merge.
 func _ap_merge_smgs(shop):
 	for weapon in RunData.get_player_weapons(0):
 		if WEAPON_ID in str(weapon.my_id) and RunData.get_combine_partner(weapon, 0) != null:

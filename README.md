@@ -107,7 +107,7 @@ Takes items. Recycles weapons, so weapons only come from the shop rule below.
 One action every 0.25 s, in this order:
 
 1. **After wave 10:** restart the run.
-2. **Merge:** if two identical SMGs of the same tier exist, merge them right away into one higher tier SMG. That frees a slot for another SMG.
+2. **Merge:** only when all 6 weapon slots are full. If two identical SMGs of the same tier exist, merge them into one higher tier SMG. That frees a slot for another SMG.
 3. **Buy:**
    * Under **6 weapons**: buy the cheapest SMG it can afford.
    * At **6 weapons**: buy items that give a stat from the priority list above (Max HP, dodge, armor, ranged damage, damage, attack speed, movement speed). Items that lower any of those stats are skipped. The item whose best stat is highest in the list wins.
