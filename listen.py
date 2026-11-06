@@ -121,6 +121,11 @@ def serve():
         with conn:
             for line in read_lines(conn):
                 d = json.loads(line)
+                if "event" in d:
+                    # wave end message from the mod, no answer needed
+                    outcome = "DIED" if d["dead"] else ("left the wave" if d["aborted"] else "cleared")
+                    print(f"--- wave {d['wave']} {outcome} ---")
+                    continue
                 obs, info = d["obs"], d["info"]
 
                 if turns % HOLD_TURNS == 0:
