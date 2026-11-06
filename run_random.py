@@ -27,7 +27,24 @@ def play_one_run(env):
         total_reward += reward
         turns += 1
         if terminated or truncated:
-            return info.get("end_reason"), info.get("end_wave"), total_reward, turns, time.time() - run_start
+            return (info.get("end_reason"), info.get("end_wave"), total_reward, turns,
+                    time.time() - run_start, info.get("report"))
+
+
+def stats_text(stats):
+    """{"max_hp": 3, "speed": -2} -> "max_hp +3, speed -2" """
+    return ", ".join(f"{name} {value:+g}" for name, value in stats.items() if value) or "no stats"
+
+
+def print_report(report):
+    """What the autopilot bought and picked this run, then the final character stats."""
+    if not report:
+        return
+    print("  ----- run report -----")
+    for entry in report["log"]:
+        price = f" for {entry['price']}" if entry["price"] else ""
+        print(f"  wave {entry['wave']:2d}  {entry['action']:14s} {entry['id']}{price}  ({stats_text(entry['stats'])})")
+    print("  final stats: " + ", ".join(f"{name} {value:g}" for name, value in report["stats"].items()))
 
 
 def print_summary(runs, minutes):
@@ -53,9 +70,10 @@ def main():
             if start is None:
                 start = time.time() - result[4]   # clock starts at the first run's first turn
             runs.append(result)
-            why, wave, reward, turns, seconds = result
+            why, wave, reward, turns, seconds, report = result
             print(f"run {len(runs):3d}: {why:17s} wave {wave:2d} | reward {reward:7.1f} | "
                   f"{turns:5d} turns | {seconds:5.0f} s | total {(time.time() - start) / 60:5.1f} min")
+            print_report(report)
     except KeyboardInterrupt:
         print("Stopped")
     finally:

@@ -60,6 +60,12 @@ var _ap_scene_since = 0
 var _ap_last_step = 0
 var _ap_warned = false
 var _ap_last_buy_price = 0   # price of the last thing bought in this shop visit (0 = nothing yet)
+var _run_log = []            # what the autopilot did this run, sent to Python when the run ends
+
+# character stats reported at the end of a run (names = game stat ids without "stat_")
+const REPORT_STATS = ["max_hp", "hp_regeneration", "lifesteal", "percent_damage", "melee_damage",
+	"ranged_damage", "elemental_damage", "attack_speed", "crit_chance", "engineering", "range",
+	"armor", "dodge", "speed", "luck", "harvesting"]
 
 
 func _ready():
@@ -108,6 +114,8 @@ func _physics_process(delta):
 		_drop_connection("send failed")
 		return
 
+	if not _in_wave and RunData.current_wave == 1:
+		_run_log = []   # first turn of a new run
 	_in_wave = true
 	_wave_number = RunData.current_wave
 
@@ -136,6 +144,8 @@ func _send_wave_end():
 		"aborted": aborted,
 		"last_wave": LAST_WAVE,
 	}
+	if not aborted and (dead or _wave_number >= LAST_WAVE):
+		msg["report"] = {"log": _run_log, "stats": _character_stats()}
 	print("BrotatoAI: wave ", _wave_number, " ended, dead=", dead, " aborted=", aborted)
 	if _tcp.put_data((to_json(msg) + "\n").to_utf8()) != OK:
 		_drop_connection("send failed")
@@ -449,9 +459,11 @@ func _ap_level_up(box):
 		for upgrade in offered:
 			if _upgrade_has_stat(upgrade, wanted):
 				print("BrotatoAI autopilot: level up, picking ", upgrade.my_id)
+				_log_action("level up", upgrade, 0)
 				box._on_choose_button_pressed(upgrade)
 				return
 	print("BrotatoAI autopilot: level up, none wanted, picking first ", offered[0].my_id)
+	_log_action("level up", offered[0], 0)
 	box._on_choose_button_pressed(offered[0])
 
 
@@ -475,11 +487,13 @@ func _ap_crate(box):
 		return
 	if _is_weapon(item):
 		print("BrotatoAI autopilot: crate weapon, recycling ", item.my_id)
+		_log_action("crate recycled", item, 0)
 		box._on_DiscardButton_pressed()
 		return
 	if item.is_meca:
 		box._meca_effect_choice_selected = 0
 	print("BrotatoAI autopilot: crate item, taking ", item.my_id)
+	_log_action("crate taken", item, 0)
 	box._on_TakeButton_pressed()
 
 
@@ -528,6 +542,7 @@ func _ap_shop(shop):
 	var pick = _ap_find_smg(items_box, gold) if weapons < MAX_WEAPONS else _ap_find_item(items_box, gold)
 	if pick != null:
 		print("BrotatoAI autopilot: buying ", pick.item_data.my_id, " for ", pick.value)
+		_log_action("bought", pick.item_data, pick.value)
 		_ap_last_buy_price = pick.value
 		items_box.on_shop_item_buy_button_pressed(pick)
 		return
@@ -574,6 +589,7 @@ func _ap_merge_smgs(shop):
 	for weapon in RunData.get_player_weapons(0):
 		if WEAPON_ID in str(weapon.my_id) and RunData.get_combine_partner(weapon, 0) != null:
 			print("BrotatoAI autopilot: merging two ", weapon.my_id)
+			_log_action("merged", weapon, 0)
 			shop._on_item_combine_button_pressed(weapon, 0)
 			return true
 	return false
@@ -661,3 +677,47 @@ func _ap_restart_run(reason):
 	ProgressData.increment_stat("run_started")
 	var _e = get_tree().change_scene(MenuData.game_scene)
 	ProgressData.start_activity()
+
+
+
+# =====================================================================
+# RUN REPORT: what the autopilot did, plus final character stats
+# =====================================================================
+
+# One entry per action: wave, what happened, item id, price, and the item's stats.
+func _log_action(action, item, price):
+	_run_log.append({
+		"wave": RunData.current_wave,
+		"action": action,
+		"id": str(item.my_id),
+		"price": price,
+		"stats": _item_stats(item),
+	})
+
+
+# The stat changes an item, weapon or upgrade gives, e.g. {"max_hp": 3, "speed": -2}.
+func _item_stats(item):
+	var stats = {}
+	var effects = item.get("effects")
+	if effects == null:
+		return stats
+	for effect in effects:
+		var key = effect.get("key")
+		if key == null or str(key) == "":
+			var key_hash = effect.get("key_hash")
+			if key_hash != null and Keys.hash_to_string.has(key_hash):
+				key = Keys.hash_to_string[key_hash]
+		var value = effect.get("value")
+		if key == null or value == null or not str(key).begins_with("stat_"):
+			continue
+		var stat_name = str(key).substr(5)
+		stats[stat_name] = stats.get(stat_name, 0) + value
+	return stats
+
+
+# The character's current stats, like the stats panel in the shop.
+func _character_stats():
+	var stats = {}
+	for stat_name in REPORT_STATS:
+		stats[stat_name] = RunData.get_stat(Keys.generate_hash("stat_" + stat_name), 0)
+	return stats

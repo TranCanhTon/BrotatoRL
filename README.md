@@ -40,7 +40,7 @@ When a wave ends, the mod sends one extra message that Python does not answer:
 {"event": "wave_end", "wave": 3, "dead": false, "aborted": false, "last_wave": 10}
 ```
 
-`dead` means the player died, `aborted` means the wave was left without ending (quit to menu, game closed), otherwise the wave was cleared.
+`dead` means the player died, `aborted` means the wave was left without ending (quit to menu, game closed), otherwise the wave was cleared. On the last wave of a run (death or wave 12 cleared) the message also carries a `report`: a log of every autopilot action this run (wave, action, item id, price, item stats) and the character's final stats.
 
 The connection is plain TCP on `127.0.0.1:9876` (your own laptop only), one JSON object per line.
 
@@ -168,7 +168,7 @@ What the AI learns lives in the network's weights, so it keeps its skill from ru
 | `mod/mod_main.gd` | The Godot mod: observations, lockstep moves, speed, autopilot |
 | `make_test_mod.py` | Packs the mod into the zip Steam Brotato loads (Workshop folder) |
 | `brotato_env.py` | The adapter between the AI library and the game: Gymnasium `reset()` and `step()`, rewards, one episode per run |
-| `run_random.py` | Phase 2 final test: random moves play runs through `brotato_env.py` for N minutes, prints one line per run and a summary |
+| `run_random.py` | Phase 2 final test: random moves play runs through `brotato_env.py` for N minutes, prints one line per run, a run report (everything the autopilot bought, merged, picked on level ups and took from crates, with each item's stats, plus the final character stats) and a summary |
 | `listen.py` | Debug tool that stands in for the AI: prints what the mod sends in readable form, answers with random moves, times each wave |
 | `find_vars.py` | Searches the unpacked game code for the variables the mod needs |
 | `mod-icon.png` | Workshop icon for the mod |

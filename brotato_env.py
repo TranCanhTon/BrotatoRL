@@ -53,6 +53,7 @@ class BrotatoEnv(gym.Env):
         self._last_info = {}
         self._wave = 0
         self._run_over = True
+        self._report = None   # what the autopilot did this run, from the mod
 
     # ---------- the two buttons the AI library presses ----------
 
@@ -90,6 +91,7 @@ class BrotatoEnv(gym.Env):
 
             # the wave ended
             if msg.get("event") == "wave_end":
+                self._report = msg.get("report")   # only on the last wave of a run
                 if msg["dead"]:
                     return self._end_run(reward + REWARD_DIED, "died", msg["wave"], terminated=True)
                 if msg["aborted"]:
@@ -139,7 +141,8 @@ class BrotatoEnv(gym.Env):
         self._run_over = True
         self._log(f"run over: {why} at wave {wave}")
         info = dict(self._last_info)
-        info.update({"end_reason": why, "end_wave": wave})
+        info.update({"end_reason": why, "end_wave": wave, "report": self._report})
+        self._report = None
         return self._last_obs, reward, terminated, not terminated, info
 
     # ---------- connection to the game ----------
