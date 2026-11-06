@@ -11,12 +11,14 @@ A Godot mod inside the game sends what is happening on screen to Python, Python 
 | Phase | What | Status |
 | --- | --- | --- |
 | 1. Setup | Python env, unpack game code, test mod, find the game variables | Done |
-| 2. Connection | Mod and Python talk, Python controls movement, speed up, autopilot | Almost done (brotato_env.py left) |
+| 2. Connection | Mod and Python talk, Python controls movement, speed up, autopilot, Gymnasium env | Built. Final 30 minute test left |
 | 3. Brain | Rule bot baseline, PPO agent | Not started |
 | 4. Training | Rewards, train, watch, tune | Not started |
 | 5. Shop and higher waves | Smarter shop, wave 10 then 20 | Basic shop rules already in the autopilot |
 
 Already working: with random moves, the autopilot plays full runs back to back and has cleared wave 10.
+
+Next: run `run_random.py` for 30 minutes unattended. Phase 2 is done when its summary shows 0 runs that ended some other way.
 
 ## How it works
 
@@ -30,7 +32,15 @@ mod_main.gd  ── 73 numbers (JSON line) ──▶ listen.py / brotato_env.py
 2. Python picks one of 9 moves and sends it back, together with the game speed.
 3. The mod holds that move for the next 0.1 s and the game continues.
 
-This "taking turns" design (lockstep) guarantees every move answers exactly the situation the AI saw, even when Python is slow. If Python does not answer within 3 s, the mod lets go of the keys, returns to normal speed and keeps trying to reconnect.
+This "taking turns" design (lockstep) guarantees every move answers exactly the situation the AI saw, even when Python is slow. If Python does not answer within 20 s (long enough for the AI to pause and learn during training), the mod lets go of the keys, returns to normal speed and keeps trying to reconnect.
+
+When a wave ends, the mod sends one extra message that Python does not answer:
+
+```
+{"event": "wave_end", "wave": 3, "dead": false, "aborted": false, "last_wave": 10}
+```
+
+`dead` means the player died, `aborted` means the wave was left without ending (quit to menu, game closed), otherwise the wave was cleared.
 
 The connection is plain TCP on `127.0.0.1:9876` (your own laptop only), one JSON object per line.
 
@@ -51,7 +61,7 @@ All numbers are scaled to 0..1 or minus 1..1. Empty slots are filled so they mea
 Notes:
 * The sight range of 600 keeps close enemies easy to tell apart. Anything further reads as "far" (1).
 * 600 is also the fastest enemy bullet measured (waves 3 to 6 and wave 81).
-* The mod also sends a small `info` block (enemy count, arena size and so on) for debugging only. The AI does not see it.
+* The mod also sends a small `info` block (HP, gold, enemy count, arena size and so on). The AI does not see it. `brotato_env.py` uses HP and gold from it to work out rewards.
 
 ## What the AI can do (9 moves)
 
@@ -115,7 +125,8 @@ One action every 0.25 s, in this order:
    * After buying something, if the money left is less than what was just paid, leave the shop. Prices go up every wave, so it does not waste money on rerolls it cannot follow up on.
    * Only reroll if, after paying for the reroll, there is still enough money for that same price.
    * Before anything is bought in this visit, "that price" is what a basic SMG costs at the current wave (the game's own price formula).
-5. Otherwise leave the shop.
+5. **Lock before leaving:** anything it would buy but cannot afford gets locked (the game's own lock button), so it is still in the shop next round. Under 6 weapons that means SMGs, at 6 weapons items with a priority stat.
+6. Otherwise leave the shop.
 
 ### Death and restarts
 * "Retry wave" screen: ends the run instead of retrying.
@@ -123,19 +134,30 @@ One action every 0.25 s, in this order:
 
 ## Planned for the AI (Phase 3 and 4)
 
-Right now Python picks **random** moves, so the character hugs walls and ignores materials. Teaching it to collect materials and avoid corners is the AI's job, through rewards:
+Right now Python picks **random** moves, so the character hugs walls and ignores materials. Teaching it to collect materials and avoid corners is the AI's job, through rewards. These are already calculated in `brotato_env.py`:
 
 | Event | Reward |
 | --- | --- |
 | Every 0.1 s alive | +0.01 |
 | Getting hit | minus 5 × (HP lost / max HP) |
-| Picking up a material | +0.05 |
+| Picking up a material (gold went up during a wave) | +0.05 per gold |
 | Clearing a wave | +3 |
 | Clearing wave 10 | +10, run ends |
 | Dying | minus 5, run ends |
-| Touching a wall | minus 0.02 per turn |
+| Closer than 40 units to a wall | minus 0.02 per turn |
 
-These are starting values and will be tuned during training. The AI will be PPO from Stable Baselines3 with a small network (2 layers of 64).
+These are starting values and will be tuned during training. The AI will be PPO from Stable Baselines3 with a small network (2 layers of 64). Plugging it in is meant to be this short:
+
+```python
+from stable_baselines3 import PPO
+from brotato_env import BrotatoEnv
+
+env = BrotatoEnv(speed=20)
+model = PPO("MlpPolicy", env)
+model.learn(total_timesteps=1_000_000)
+```
+
+What the AI learns lives in the network's weights, so it keeps its skill from run to run even though every run (shop, drops, level ups) is random. Training saves the weights to a file so the next session continues where the last one stopped.
 
 ## Files
 
@@ -143,7 +165,9 @@ These are starting values and will be tuned during training. The AI will be PPO 
 | --- | --- |
 | `mod/mod_main.gd` | The Godot mod: observations, lockstep moves, speed, autopilot |
 | `make_test_mod.py` | Packs the mod into the zip Steam Brotato loads (Workshop folder) |
-| `listen.py` | Test server: prints a summary of what the mod sends, answers with random moves, times each wave |
+| `brotato_env.py` | The adapter between the AI library and the game: Gymnasium `reset()` and `step()`, rewards, one episode per run |
+| `run_random.py` | Phase 2 final test: random moves play runs through `brotato_env.py` for N minutes, prints one line per run and a summary |
+| `listen.py` | Debug tool that stands in for the AI: prints what the mod sends in readable form, answers with random moves, times each wave |
 | `find_vars.py` | Searches the unpacked game code for the variables the mod needs |
 | `mod-icon.png` | Workshop icon for the mod |
 
@@ -166,7 +190,9 @@ Tested with Brotato 1.2.0.1 (Default Public Version), mod loader 6.3.0, Windows,
 
 1. Close Brotato (the mod only loads at game start).
 2. `python make_test_mod.py`
-3. `python listen.py 20` (the number is the game speed)
+3. One of:
+   * `python run_random.py 30 20` : random runs for 30 minutes at 20x through the Gymnasium env
+   * `python listen.py 20` : watch what the mod sends, at 20x
 4. Start Brotato and don't touch anything.
 5. Stop with Ctrl+C.
 
