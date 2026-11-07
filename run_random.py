@@ -11,8 +11,6 @@ import time
 
 from brotato_env import BrotatoEnv
 
-MINUTES = float(sys.argv[1]) if len(sys.argv) > 1 else 30.0
-SPEED = float(sys.argv[2]) if len(sys.argv) > 2 else 20.0
 HOLD_TURNS = 5   # keep each random move for 0.5 s of game time, like listen.py
 
 
@@ -59,6 +57,9 @@ def print_summary(runs, minutes):
 
 
 def main():
+    # read here, not at the top, so rule_bot.py and watch.py can import this file with their own arguments
+    MINUTES = float(sys.argv[1]) if len(sys.argv) > 1 else 30.0
+    SPEED = float(sys.argv[2]) if len(sys.argv) > 2 else 20.0
     env = BrotatoEnv(speed=SPEED, verbose=False)
     print(f"Random runs for {MINUTES:.0f} minutes at {SPEED:.0f}x. Start Brotato now, then don't touch anything.")
 

@@ -12,3 +12,7 @@ save-backup/
 
 # Editor
 .vscode/
+
+# Training output (trained brains and graphs, large and personal)
+models/
+tb_logs/
