@@ -18,7 +18,7 @@ A Godot mod inside the game sends what is happening on screen to Python, Python 
 
 Already working: the autopilot plays full runs back to back (random moves, the rule bot or the AI steering), and the AI trains through it.
 
-Next: run `run_random.py` for 30 minutes unattended. Phase 2 is done when its summary shows 0 runs that ended some other way.
+Next: Phase 4, long training runs with `train.py`, checked with TensorBoard and `watch.py`.
 
 ## How it works
 
