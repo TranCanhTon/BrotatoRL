@@ -5,9 +5,8 @@ import socket
 import sys
 import time
 
-HOST = "127.0.0.1"
-PORT = 9876
-OBS_SIZE = 73
+from brotato_env import (HOST, PORT, OBS_SIZE, WALLS, HP, OWN_VELOCITY, ENEMIES, ENEMY_LEN, BULLETS,
+                         MATERIALS, CONSUMABLES, RADAR_ENEMIES, RADAR_BULLETS, TIME_LEFT, BUILD)
 PRINT_EVERY = 5   # print 1 of every 5 turns (every 0.5s game time)
 HOLD_TURNS = 5    # keep each random move for 5 turns (0.5s) so the wandering is visible
 
@@ -27,30 +26,61 @@ def distance_text(dist, sight):
     return " far" if dist >= 1.0 else f"{dist * sight:4.0f}"
 
 
+RADAR_NAMES = ["right", "down right", "down", "down left", "left", "up left", "up", "up right"]
+
+
+def radar_text(values):
+    """Busiest direction and how busy (0..1), e.g. "left 0.6"."""
+    i = max(range(8), key=lambda k: values[k])
+    return "empty" if values[i] <= 0 else f"{RADAR_NAMES[i]} {values[i]:.1f}"
+
+
+def new_eyes(obs, info):
+    """Second line: the numbers added in version 2, to check they look sensible."""
+    e = obs[ENEMIES:ENEMIES + ENEMY_LEN]
+    if e[2] < 0.999:
+        enemy = (f"closest enemy speed {math.hypot(e[3], e[4]) * 800:4.0f} size {e[5] * 150:4.0f} "
+                 f"boss {'yes' if e[6] > 0.5 else 'no '}")
+    else:
+        enemy = "no enemy" + " " * 30
+    c = obs[CONSUMABLES:CONSUMABLES + 4]
+    cons = f"pickup {distance_text(c[2], info['sight_range'])} {'crate' if c[3] > 0.5 else 'fruit'}" if c[2] < 0.999 else "pickup none      "
+    b = obs[BUILD:BUILD + 14]
+    build = (f"build hp {b[0] * 100:+.0f} armor {b[1] * 30:+.0f} dodge {b[2] * 60:+.0f} range {b[3] * 400:+.0f} "
+             f"weapons {b[10] * 6:.0f} wave {b[11] * 20:.0f} danger {b[12] * 5:.0f} melee {b[13]:.1f}")
+    return (f"     own speed {math.hypot(obs[OWN_VELOCITY], obs[OWN_VELOCITY + 1]) * 600:4.0f} | {enemy} | "
+            f"radar enemies {radar_text(obs[RADAR_ENEMIES:RADAR_ENEMIES + 8])}, bullets "
+            f"{radar_text(obs[RADAR_BULLETS:RADAR_BULLETS + 8])} | {cons} | {build} | "
+            f"biggest enemy radius {info.get('max_enemy_radius', 0):.0f}")
+
+
 def summary(obs, info):
     sight = info["sight_range"]
-    walls = {"left": obs[2], "right": obs[3], "top": obs[4], "bottom": obs[5]}
+    walls = {"left": obs[WALLS], "right": obs[WALLS + 1], "top": obs[WALLS + 2], "bottom": obs[WALLS + 3]}
     wall_name = min(walls, key=walls.get)
     wall_units = walls[wall_name] * (info["arena_w"] if wall_name in ("left", "right") else info["arena_h"])
 
     if info["n_enemies"] > 0:
-        enemy = f"enemies {info['n_enemies']:3d}, closest {distance_text(obs[9], sight)} {direction(obs[7], obs[8]):10s}"
+        enemy = (f"enemies {info['n_enemies']:3d}, closest {distance_text(obs[ENEMIES + 2], sight)} "
+                 f"{direction(obs[ENEMIES], obs[ENEMIES + 1]):10s}")
     else:
         enemy = "enemies   0" + " " * 22
 
     if info["n_bullets"] > 0:
-        b_dist = min(1.0, math.hypot(obs[31], obs[32]))
-        bullet = f"bullets {info['n_bullets']:3d}, closest {distance_text(b_dist, sight)} {direction(obs[31], obs[32]):10s}"
+        b_dist = min(1.0, math.hypot(obs[BULLETS], obs[BULLETS + 1]))
+        bullet = (f"bullets {info['n_bullets']:3d}, closest {distance_text(b_dist, sight)} "
+                  f"{direction(obs[BULLETS], obs[BULLETS + 1]):10s}")
     else:
         bullet = "bullets   0" + " " * 22
 
     if info["n_materials"] > 0:
-        mat = f"materials {info['n_materials']:3d}, closest {distance_text(obs[65], sight)} {direction(obs[63], obs[64])}"
+        mat = (f"materials {info['n_materials']:3d}, closest {distance_text(obs[MATERIALS + 2], sight)} "
+               f"{direction(obs[MATERIALS], obs[MATERIALS + 1])}")
     else:
         mat = "materials   0"
 
-    return (f"hp {obs[6] * 100:3.0f}%  time {obs[72] * 100:3.0f}%  "
-            f"wall {wall_units:4.0f} {wall_name:6s} | {enemy} | {bullet} | {mat}")
+    return (f"hp {obs[HP] * 100:3.0f}%  time {obs[TIME_LEFT] * 100:3.0f}%  "
+            f"wall {wall_units:4.0f} {wall_name:6s} | {enemy} | {bullet} | {mat}\n" + new_eyes(obs, info))
 
 
 def check(obs):

@@ -8,7 +8,7 @@ Materials and the middle of the arena give a small bonus, so it collects when it
 Its score (average wave and reward) is the bar the trained AI has to beat.
 
 Usage:  python rule_bot.py [minutes] [speed]
-        python rule_bot.py 30 20
+        python rule_bot.py 30 4
 """
 
 import math
@@ -19,15 +19,12 @@ from brotato_env import BrotatoEnv
 from run_random import print_report, print_summary
 
 MINUTES = float(sys.argv[1]) if len(sys.argv) > 1 else 30.0
-SPEED = float(sys.argv[2]) if len(sys.argv) > 2 else 20.0
+SPEED = float(sys.argv[2]) if len(sys.argv) > 2 else 4.0
 
-# ---------- what the 73 numbers mean (same layout as the mod sends) ----------
-SIGHT_RANGE = 600.0        # enemy, bullet and material offsets are divided by this
+# ---------- what the numbers mean (layout comes from brotato_env.py, same as the mod sends) ----------
+from brotato_env import (POS, ENEMIES, N_ENEMIES, ENEMY_LEN, BULLETS, N_BULLETS, BULLET_LEN,
+                         MATERIALS, N_MATERIALS, SIGHT_RANGE)
 BULLET_SPEED_MAX = 600.0   # bullet velocities are divided by this
-POS = 0                    # x, y as a fraction of the arena
-ENEMIES, N_ENEMIES = 7, 8          # dx, dy, dist each
-BULLETS, N_BULLETS = 31, 8         # dx, dy, vx, vy each
-MATERIALS, N_MATERIALS = 63, 3     # dx, dy, dist each
 
 # move number -> direction. 0 stay, 1 up, 2 down, 3 left, 4 right, 5 up left, 6 up right, 7 down left, 8 down right
 D = 1 / math.sqrt(2)       # the game makes diagonals the same speed as straight moves
@@ -49,14 +46,15 @@ CENTER_WEIGHT = 0.05       # tiny pull to the middle, so it doesn't idle in corn
 
 
 def read_things(obs):
-    """Turn the 73 numbers into lists of (x, y) offsets in game units, empty slots dropped."""
+    """Turn the numbers into lists of (x, y) offsets in game units, empty slots dropped.
+    The bot only uses enemy position, it ignores the newer enemy speed / size / boss numbers."""
     enemies, bullets, materials = [], [], []
     for i in range(N_ENEMIES):
-        dx, dy, dist = obs[ENEMIES + 3 * i: ENEMIES + 3 * i + 3]
+        dx, dy, dist = obs[ENEMIES + ENEMY_LEN * i: ENEMIES + ENEMY_LEN * i + 3]
         if dist < 0.999:   # empty slot is 0, 0, 1
             enemies.append((dx * SIGHT_RANGE, dy * SIGHT_RANGE))
     for i in range(N_BULLETS):
-        dx, dy, vx, vy = obs[BULLETS + 4 * i: BULLETS + 4 * i + 4]
+        dx, dy, vx, vy = obs[BULLETS + BULLET_LEN * i: BULLETS + BULLET_LEN * i + 4]
         if dx or dy or vx or vy:   # empty slot is all zeros
             bullets.append((dx * SIGHT_RANGE, dy * SIGHT_RANGE,
                             vx * BULLET_SPEED_MAX, vy * BULLET_SPEED_MAX))
@@ -135,7 +133,7 @@ def score_move(move, things, pos, arena):
 
 
 def decide(obs, arena_w, arena_h):
-    """The bot's brain: the 73 numbers in, a move 0..8 out."""
+    """The bot's brain: the numbers in, a move 0..8 out."""
     things = read_things(obs)
     pos = (obs[POS] * arena_w, obs[POS + 1] * arena_h)
     arena = (arena_w, arena_h)
