@@ -17,3 +17,4 @@ save-backup/
 models/
 tb_logs/
 train_log.txt
+runs.csv

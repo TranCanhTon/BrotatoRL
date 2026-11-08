@@ -4,11 +4,13 @@ It plays N_STEPS turns, pauses the game to learn from them, and repeats until th
 What it learned is saved in models/latest.zip, and the next run of this script continues from it.
 Graphs go to tb_logs/ (open them with: tensorboard --logdir tb_logs).
 Everything printed also goes to train_log.txt (added to the end, never overwritten).
+One row per finished run goes to runs.csv (open it in Excel): wave, reward, materials, damage and so on.
 
 Usage:  python train.py [minutes] [speed]
         python train.py 10 12
 """
 
+import csv
 import os
 import sys
 import time
@@ -25,6 +27,10 @@ MODEL_DIR = "models"
 LATEST = os.path.join(MODEL_DIR, "latest.zip")
 LOG_DIR = "tb_logs"
 LOG_FILE = "train_log.txt"
+RUNS_FILE = "runs.csv"
+RUNS_COLUMNS = ["time", "total_turns", "end", "wave", "reward", "turns", "materials", "materials_per_wave",
+                "damage_taken", "wall_time", "reward_alive", "reward_hit", "reward_material", "reward_wall",
+                "reward_wave", "reward_won", "reward_died"]
 CHECKPOINT_EVERY = 20_000   # turns between backup copies of the brain (about 6 minutes at your speed)
 
 # ---------- PPO settings (these are the library's defaults, written out so you can see them) ----------
@@ -54,15 +60,56 @@ class Tee:
 
 
 class RunLogger(BaseCallback):
-    """Adds our own graphs to TensorBoard: the wave each run reached, and how often it won."""
+    """After every finished run: our own TensorBoard graphs, one row in runs.csv, one line in the terminal.
+
+    Graphs (run/...): wave reached, won, materials picked up (total and per wave), damage taken,
+    share of time near a wall. And reward_parts/...: the run's reward split into its parts.
+    """
 
     def _on_step(self):
         for done, info in zip(self.locals["dones"], self.locals["infos"]):
             if done and info.get("end_reason") in ("died", "won"):
-                self.logger.record_mean("run/wave_reached", info["end_wave"])
-                self.logger.record_mean("run/won", 1.0 if info["end_reason"] == "won" else 0.0)
-                print(f"[train] {time.strftime('%H:%M:%S')} run over: {info['end_reason']} at wave {info['end_wave']}")
+                self._log_run(info)
         return True
+
+    def _log_run(self, info):
+        st = info.get("stats") or {}
+        turns = max(1, st.get("turns", 0))
+        waves_played = st.get("waves_cleared", 0) + (0 if info["end_reason"] == "won" else 1)
+        row = {
+            "time": time.strftime("%Y-%m-%d %H:%M:%S"),
+            "total_turns": self.num_timesteps,
+            "end": info["end_reason"],
+            "wave": info["end_wave"],
+            "reward": round(sum(v for k, v in st.items() if k.startswith("reward_")), 2),
+            "turns": st.get("turns", 0),
+            "materials": st.get("materials", 0),
+            "materials_per_wave": round(st.get("materials", 0) / max(1, waves_played), 1),
+            "damage_taken": round(st.get("damage_taken", 0.0), 2),
+            "wall_time": round(st.get("wall_turns", 0) / turns, 3),
+        }
+        for key in RUNS_COLUMNS:
+            if key.startswith("reward_"):
+                row[key] = round(st.get(key, 0.0), 2)
+
+        self.logger.record_mean("run/wave_reached", info["end_wave"])
+        self.logger.record_mean("run/won", 1.0 if info["end_reason"] == "won" else 0.0)
+        for key in ("materials", "materials_per_wave", "damage_taken", "wall_time"):
+            self.logger.record_mean(f"run/{key}", row[key])
+        for key in RUNS_COLUMNS:
+            if key.startswith("reward_"):
+                self.logger.record_mean(f"reward_parts/{key[len('reward_'):]}", row[key])
+
+        new_file = not os.path.exists(RUNS_FILE)
+        with open(RUNS_FILE, "a", newline="", encoding="utf-8") as f:
+            writer = csv.DictWriter(f, fieldnames=RUNS_COLUMNS)
+            if new_file:
+                writer.writeheader()
+            writer.writerow(row)
+
+        print(f"[train] {row['time'][11:]} run over: {info['end_reason']} at wave {info['end_wave']} | "
+              f"reward {row['reward']} | materials {row['materials']} | damage {row['damage_taken']} max HP | "
+              f"near wall {row['wall_time'] * 100:.0f}% of the time")
 
 
 class StopAfter(BaseCallback):

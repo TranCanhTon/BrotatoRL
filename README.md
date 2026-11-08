@@ -208,6 +208,8 @@ The PPO settings (all library defaults) are written out at the top of `train.py`
 
 First test (Danger 5, 10 minutes at 12x): 24,222 turns, 9 runs reaching waves 6 to 9, no crashes. The judge's `explained_variance` went from minus 0.13 to 0.63, so learning works. About 38 turns per real second on the development laptop, so 1 million turns takes about 7 hours.
 
+After every finished run `train.py` also writes one row to `runs.csv` (open it in Excel): wave, reward, turns, materials picked up (total and per wave), damage taken (in full health bars), share of time near a wall, and the reward split into its parts (alive, hit, material, wall, wave, won, died; they add up to the total). The same numbers go to TensorBoard as `run/...` and `reward_parts/...` graphs. The reward the AI gets is unchanged, it is only counted by part.
+
 `watch.py` loads the saved brain and plays with no learning, at normal speed by default, always taking its best move (or rolling the dice like in training with `dice`).
 
 ## Files

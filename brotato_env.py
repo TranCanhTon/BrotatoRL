@@ -54,6 +54,7 @@ class BrotatoEnv(gym.Env):
         self._wave = 0
         self._run_over = True
         self._report = None   # what the autopilot did this run, from the mod
+        self._stats = {}      # what happened this run, broken down (for graphs, not seen by the AI)
 
     # ---------- the two buttons the AI library presses ----------
 
@@ -63,6 +64,16 @@ class BrotatoEnv(gym.Env):
         msg = self._next_turn()
         self._run_over = False
         self._wave = msg["info"]["wave"]
+        self._stats = {
+            "turns": 0,
+            "materials": 0,        # gold picked up during waves
+            "damage_taken": 0.0,   # HP lost, in max HPs (1.0 = lost a full health bar in total)
+            "wall_turns": 0,       # turns spent near a wall
+            "waves_cleared": 0,
+            # the reward split into its parts (they add up to the run's total reward)
+            "reward_alive": 0.0, "reward_hit": 0.0, "reward_material": 0.0, "reward_wall": 0.0,
+            "reward_wave": 0.0, "reward_won": 0.0, "reward_died": 0.0,
+        }
         self._remember(msg)
         return self._last_obs, dict(self._last_info)
 
@@ -85,7 +96,13 @@ class BrotatoEnv(gym.Env):
                 else:
                     # first turn of a new wave: HP and gold were changed by the shop, don't count them
                     self._wave = info["wave"]
-                reward += REWARD_ALIVE + self._wall_penalty(msg["obs"], info)
+                wall = self._wall_penalty(msg["obs"], info)
+                reward += REWARD_ALIVE + wall
+                self._stats["turns"] += 1
+                self._stats["reward_alive"] += REWARD_ALIVE
+                self._stats["reward_wall"] += wall
+                if wall:
+                    self._stats["wall_turns"] += 1
                 self._remember(msg)
                 return self._last_obs, reward, False, False, dict(info)
 
@@ -93,11 +110,15 @@ class BrotatoEnv(gym.Env):
             if msg.get("event") == "wave_end":
                 self._report = msg.get("report")   # only on the last wave of a run
                 if msg["dead"]:
+                    self._stats["reward_died"] += REWARD_DIED
                     return self._end_run(reward + REWARD_DIED, "died", msg["wave"], terminated=True)
                 if msg["aborted"]:
                     return self._end_run(reward, "left the wave", msg["wave"], terminated=False)
                 reward += REWARD_WAVE_CLEARED
+                self._stats["waves_cleared"] += 1
+                self._stats["reward_wave"] += REWARD_WAVE_CLEARED
                 if msg["wave"] >= msg["last_wave"]:
+                    self._stats["reward_won"] += REWARD_RUN_WON
                     return self._end_run(reward + REWARD_RUN_WON, "won", msg["wave"], terminated=True)
                 self._log(f"wave {msg['wave']} cleared")
                 continue   # level ups and shop happen now, then the next wave's first turn arrives
@@ -112,15 +133,19 @@ class BrotatoEnv(gym.Env):
 
     # ---------- rewards ----------
 
-    @staticmethod
-    def _hit_and_material_reward(prev, now):
+    def _hit_and_material_reward(self, prev, now):
         reward = 0.0
         hp_lost = prev["hp"] - now["hp"]
         if hp_lost > 0:
-            reward += REWARD_HIT * hp_lost / max(1, now["max_hp"])
+            hit = REWARD_HIT * hp_lost / max(1, now["max_hp"])
+            reward += hit
+            self._stats["damage_taken"] += hp_lost / max(1, now["max_hp"])
+            self._stats["reward_hit"] += hit
         gold_gained = now["gold"] - prev["gold"]
         if gold_gained > 0:
             reward += REWARD_MATERIAL * gold_gained
+            self._stats["materials"] += gold_gained
+            self._stats["reward_material"] += REWARD_MATERIAL * gold_gained
         return reward
 
     @staticmethod
@@ -141,7 +166,7 @@ class BrotatoEnv(gym.Env):
         self._run_over = True
         self._log(f"run over: {why} at wave {wave}")
         info = dict(self._last_info)
-        info.update({"end_reason": why, "end_wave": wave, "report": self._report})
+        info.update({"end_reason": why, "end_wave": wave, "report": self._report, "stats": dict(self._stats)})
         self._report = None
         return self._last_obs, reward, terminated, not terminated, info
 
