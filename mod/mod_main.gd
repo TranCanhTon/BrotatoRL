@@ -6,11 +6,25 @@ const TURN_EVERY = 0.1        # game seconds between turns
 const RETRY_EVERY = 1.0       # real seconds between connection attempts
 const REPLY_TIMEOUT_MS = 20000 # give up waiting for Python after this (AI training pauses to learn)
 
+const OBS_VERSION = 2          # layout of the numbers below. Python checks it matches (brotato_env.py)
 const N_ENEMIES = 8
 const N_BULLETS = 8
 const N_MATERIALS = 3
+const N_CONSUMABLES = 2        # fruit (heals) and crates
+const N_SPARE = 16             # always 0 for now, room to add things later without a new brain
 const SIGHT_RANGE = 600.0
 const BULLET_SPEED_MAX = 600.0
+const PLAYER_SPEED_MAX = 600.0 # player velocity is divided by this
+const ENEMY_SPEED_MAX = 800.0  # enemy velocity is divided by this (charges are fast)
+const ENEMY_SIZE_MAX = 150.0   # enemy hitbox radius is divided by this (bosses are big)
+const RADAR_ENEMY_RANGE = 1000.0  # enemies closer than this count on the radar
+const RADAR_BULLET_RANGE = 600.0
+const RADAR_FULL = 5.0         # this much "crowd" in one direction = 1.0 on the radar
+const SCRIPT_BOSS = "res://entities/units/enemies/bosses/boss.gd"  # bosses and elites
+# build stats the AI sees: [game stat id without "stat_", number that counts as 1.0]
+const BUILD_STATS = [["max_hp", 100.0], ["armor", 30.0], ["dodge", 60.0], ["range", 400.0],
+	["speed", 50.0], ["attack_speed", 100.0], ["hp_regeneration", 30.0], ["lifesteal", 50.0],
+	["percent_damage", 100.0], ["crit_chance", 100.0]]
 const SPEED_MIN = 0.25
 const SPEED_MAX = 20.0
 
@@ -25,6 +39,8 @@ var _buffer = ""
 var _normal_ticks = 60
 var _in_wave = false   # true while turns are being taken, to notice when a wave ends
 var _wave_number = 0
+var _build_obs = []    # build numbers, read once per wave (they don't change during a wave)
+var _build_wave = -1   # wave _build_obs was read for
 
 # ---------- autopilot settings ----------
 const AUTOPILOT_STEP_MS = 250       # real time between two autopilot clicks
@@ -151,6 +167,7 @@ func _physics_process(delta):
 #   otherwise the wave was cleared. Python does not answer this message.
 func _send_wave_end():
 	_in_wave = false
+	_build_wave = -1   # read the build again next wave (shop and level ups change it)
 	var scene = get_tree().current_scene
 	var dead = false
 	var aborted = true
@@ -295,14 +312,33 @@ func _build_message(main):
 	var max_hp = max(1.0, p.max_stats.health)
 	obs.append(clamp(p.current_stats.health / max_hp, 0.0, 1.0))
 
-	# enemies: dx, dy (-1..1), dist (0..1), all divided by SIGHT_RANGE. Empty slot: 0, 0, 1
+	# own velocity: vx, vy (-1..1, / PLAYER_SPEED_MAX). The brain has no memory, so this tells it which way it is going
+	var pv = p.linear_velocity
+	obs.append(clamp(pv.x / PLAYER_SPEED_MAX, -1.0, 1.0))
+	obs.append(clamp(pv.y / PLAYER_SPEED_MAX, -1.0, 1.0))
+
+	# enemies, 7 numbers each:
+	#   dx, dy (-1..1), dist (0..1), all / SIGHT_RANGE
+	#   vx, vy (-1..1, / ENEMY_SPEED_MAX): where it is walking or charging
+	#   size (0..1, hitbox radius / ENEMY_SIZE_MAX)
+	#   boss (1 = boss or elite, 0 = normal)
+	# Empty slot: 0, 0, 1, 0, 0, 0, 0
 	var all_enemies = main._entity_spawner.get_all_enemies()
-	var enemies = _closest(all_enemies, pos, N_ENEMIES)
+	var enemies = _closest(all_enemies, pos, -1)   # all of them, closest first (radar uses all)
+	var max_radius_seen = 0.0
 	for i in N_ENEMIES:
 		if i < enemies.size():
+			var e = enemies[i][2]
 			_append_offset(obs, enemies[i][1])
+			var ev = e.linear_velocity
+			obs.append(clamp(ev.x / ENEMY_SPEED_MAX, -1.0, 1.0))
+			obs.append(clamp(ev.y / ENEMY_SPEED_MAX, -1.0, 1.0))
+			var radius = _enemy_radius(e)
+			max_radius_seen = max(max_radius_seen, radius)
+			obs.append(clamp(radius / ENEMY_SIZE_MAX, 0.0, 1.0))
+			obs.append(1.0 if _runs_script(e, SCRIPT_BOSS) else 0.0)
 		else:
-			obs.append_array([0.0, 0.0, 1.0])
+			obs.append_array([0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0])
 
 	# bullets: dx, dy (-1..1, / SIGHT_RANGE), vx, vy (-1..1, / BULLET_SPEED_MAX). Empty slot: zeros
 	var bullet_nodes = []
@@ -311,7 +347,7 @@ func _build_message(main):
 		if child is Projectile:
 			bullet_nodes.append(child)
 			max_speed_seen = max(max_speed_seen, child.velocity.length())
-	var bullets = _closest(bullet_nodes, pos, N_BULLETS)
+	var bullets = _closest(bullet_nodes, pos, -1)
 	for i in N_BULLETS:
 		if i < bullets.size():
 			var d = bullets[i][1]
@@ -323,7 +359,7 @@ func _build_message(main):
 		else:
 			obs.append_array([0.0, 0.0, 0.0, 0.0])
 
-	# materials: same format as enemies
+	# materials: dx, dy, dist like enemies. Empty slot: 0, 0, 1
 	var mats = _closest(main._active_golds, pos, N_MATERIALS)
 	for i in N_MATERIALS:
 		if i < mats.size():
@@ -331,11 +367,42 @@ func _build_message(main):
 		else:
 			obs.append_array([0.0, 0.0, 1.0])
 
+	# consumables (fruit heals, crates give items): dx, dy, dist, crate (1 = crate, 0 = fruit). Empty slot: 0, 0, 1, 0
+	var consumable_nodes = []
+	for c in main._consumables:
+		if is_instance_valid(c) and not c.already_picked_up:
+			consumable_nodes.append(c)
+	var cons = _closest(consumable_nodes, pos, N_CONSUMABLES)
+	for i in N_CONSUMABLES:
+		if i < cons.size():
+			_append_offset(obs, cons[i][1])
+			obs.append(1.0 if _is_crate(cons[i][2]) else 0.0)
+		else:
+			obs.append_array([0.0, 0.0, 1.0, 0.0])
+
+	# radar: how crowded each of 8 directions is, counting ALL enemies, then ALL bullets.
+	# Directions: 0 right, 1 down right, 2 down, 3 down left, 4 left, 5 up left, 6 up, 7 up right
+	obs.append_array(_radar(enemies, RADAR_ENEMY_RANGE))
+	obs.append_array(_radar(bullets, RADAR_BULLET_RANGE))
+
 	# time left, 0..1
 	var wait = max(0.001, main._wave_timer.wait_time)
 	obs.append(clamp(main._wave_timer.time_left / wait, 0.0, 1.0))
 
+	# build: stats, weapon count, wave, danger, melee share (read once per wave)
+	if _build_wave != RunData.current_wave:
+		_build_obs = _read_build()
+		_build_wave = RunData.current_wave
+	obs.append_array(_build_obs)
+
+	# spare slots, always 0 for now
+	for i in N_SPARE:
+		obs.append(0.0)
+
 	var info = {
+		"obs_version": OBS_VERSION,
+		"n_consumables": consumable_nodes.size(),
+		"max_enemy_radius": max_radius_seen,
 		"wave": RunData.current_wave,
 		"hp": p.current_stats.health,
 		"max_hp": p.max_stats.health,
@@ -357,7 +424,7 @@ func _append_offset(obs, d):
 	obs.append(clamp(d.length() / SIGHT_RANGE, 0.0, 1.0))
 
 
-# returns up to n entries of [distance_squared, offset_from_player, node], closest first
+# returns up to n entries of [distance_squared, offset_from_player, node], closest first (n = -1: all)
 func _closest(nodes, pos, n):
 	var arr = []
 	for node in nodes:
@@ -366,9 +433,68 @@ func _closest(nodes, pos, n):
 		var d = node.global_position - pos
 		arr.append([d.length_squared(), d, node])
 	arr.sort_custom(self, "_by_distance")
-	if arr.size() > n:
+	if n >= 0 and arr.size() > n:
 		arr.resize(n)
 	return arr
+
+
+# 8 numbers, one per direction (0 right, then clockwise). Each thing closer than max_range adds
+# more the closer it is (1 when touching, 0 at max_range). RADAR_FULL of that = 1.0.
+func _radar(entries, max_range):
+	var sectors = [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
+	for entry in entries:
+		var dist = sqrt(entry[0])
+		if dist >= max_range:
+			break   # entries are sorted, everything after is farther
+		var d = entry[1]
+		var sector = posmod(int(round(atan2(d.y, d.x) / (PI / 4.0))), 8)
+		sectors[sector] += 1.0 - dist / max_range
+	for i in 8:
+		sectors[i] = clamp(sectors[i] / RADAR_FULL, 0.0, 1.0)
+	return sectors
+
+
+# Hitbox radius of an enemy in game units (0 if it can't be read). Same shape the game uses for knockback.
+func _enemy_radius(enemy):
+	var hurtbox = enemy.get("_hurtbox")
+	if hurtbox == null or not is_instance_valid(hurtbox):
+		return 0.0
+	var collision = hurtbox.get("_collision")
+	if collision == null or not is_instance_valid(collision) or collision.shape == null:
+		return 0.0
+	var shape_scale = abs(collision.global_scale.x)
+	var shape = collision.shape
+	if "radius" in shape:
+		return shape.radius * shape_scale
+	if "extents" in shape:
+		return max(shape.extents.x, shape.extents.y) * shape_scale
+	return 0.0
+
+
+func _is_crate(consumable):
+	var data = consumable.get("consumable_data")
+	if data == null:
+		return false
+	return data.my_id_hash == Keys.consumable_item_box_hash or data.my_id_hash == Keys.consumable_legendary_item_box_hash
+
+
+# Build numbers (-1..1): BUILD_STATS, weapon count / MAX_WEAPONS, wave / LAST_WAVE, DANGER / 5,
+# share of weapons that are melee (0 = all ranged, 1 = all melee)
+func _read_build():
+	var build = []
+	for entry in BUILD_STATS:
+		var value = RunData.get_stat(Keys.generate_hash("stat_" + entry[0]), 0)
+		build.append(clamp(value / entry[1], -1.0, 1.0))
+	var weapons = RunData.get_player_weapons(0)
+	build.append(clamp(weapons.size() / float(MAX_WEAPONS), 0.0, 1.0))
+	build.append(clamp(RunData.current_wave / float(LAST_WAVE), 0.0, 1.0))
+	build.append(clamp(DANGER / 5.0, 0.0, 1.0))
+	var melee = 0
+	for weapon in weapons:
+		if "type" in weapon and int(weapon.type) == 0:   # 0 = melee in the game's WeaponType
+			melee += 1
+	build.append(melee / float(max(1, weapons.size())))
+	return build
 
 
 func _by_distance(a, b):

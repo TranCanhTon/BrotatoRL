@@ -9,7 +9,7 @@ MOD_ID = "Ton-BrotatoAI"
 manifest = {
     "name": "BrotatoAI",
     "namespace": "Ton",
-    "version_number": "0.2.0",
+    "version_number": "0.3.0",
     "description": "Bridge between Brotato and a Python AI",
     "website_url": "",
     "dependencies": [],
