@@ -13,22 +13,22 @@ A Godot mod inside the game sends what is happening on screen to Python, Python 
 | 1. Setup | Python env, unpack game code, test mod, find the game variables | Done |
 | 2. Connection | Mod and Python talk, Python controls movement, speed up, autopilot, Gymnasium env | Built. Final 30 minute test left |
 | 3. Brain | Rule bot baseline, PPO agent, watch tool | Done: rule bot, `train.py` (10 minute test passed), `watch.py` |
-| 4. Training | Long training runs, watch, tune rewards and settings | Next |
+| 4. Training | Long training runs, watch, tune rewards and settings | In progress: brain v2 training from zero |
 | 5. Shop and higher waves | Smarter shop | Rule based shop already in the autopilot |
 
 Already working: the autopilot plays full runs back to back (random moves, the rule bot or the AI steering), and the AI trains through it.
 
-Next: Phase 4, long training runs with `train.py`, checked with TensorBoard and `watch.py`.
+Brain v1 (73 numbers) reached an average death wave of 14.1 at Danger 5 after about 500,000 turns, dying mostly on boss waves and sometimes standing still while a boss hit it, because it could not see enemy movement or size. Brain v2 (161 numbers) adds that and more, see below, and trains from zero. The v1 brain is kept in `models/latest.zip`.
 
 ## How it works
 
 ```
 Brotato (Godot 3)                          Python
-mod_main.gd  ── 73 numbers (JSON line) ──▶ listen.py / brotato_env.py
+mod_main.gd  ── 161 numbers (JSON line) ─▶ listen.py / brotato_env.py
              ◀── {"action": n, "speed": s} ─
 ```
 
-1. Every **0.1 s of game time** the mod freezes the game and sends 73 numbers describing the situation.
+1. Every **0.1 s of game time** the mod freezes the game and sends 161 numbers describing the situation.
 2. Python picks one of 9 moves and sends it back, together with the game speed.
 3. The mod holds that move for the next 0.1 s and the game continues.
 
@@ -44,23 +44,31 @@ When a wave ends, the mod sends one extra message that Python does not answer:
 
 The connection is plain TCP on `127.0.0.1:9876` (your own laptop only), one JSON object per line.
 
-## What the AI sees (73 numbers)
+## What the AI sees (161 numbers, layout version 2)
 
-All numbers are scaled to 0..1 or minus 1..1. Empty slots are filled so they mean "nothing there".
+All numbers are scaled to 0..1 or minus 1..1. Empty slots are filled so they mean "nothing there". The layout lives in one place, at the top of `brotato_env.py`, and the mod sends its version (`obs_version`) so a mismatch stops with a clear message.
 
 | Index | What | Count | Scaling |
 | --- | --- | --- | --- |
 | 0 to 1 | Player position in the arena | 2 | fraction of arena size |
 | 2 to 5 | Distance to left, right, top, bottom wall | 4 | fraction of arena size |
 | 6 | HP | 1 | HP / max HP |
-| 7 to 30 | 8 closest enemies: dx, dy, distance | 24 | divided by sight range 600, empty = 0, 0, 1 |
-| 31 to 62 | 8 closest enemy bullets: dx, dy, vx, vy | 32 | position / 600, speed / 600, empty = zeros |
-| 63 to 71 | 3 closest materials: dx, dy, distance | 9 | divided by sight range 600, empty = 0, 0, 1 |
-| 72 | Time left in the wave | 1 | time left / wave length |
+| 7 to 8 | Own velocity vx, vy | 2 | / 600 |
+| 9 to 64 | 8 closest enemies: dx, dy, distance, vx, vy, size, boss | 56 | position / 600, velocity / 800, hitbox radius / 150, boss 1 or 0 (bosses and elites). Empty = 0, 0, 1, 0, 0, 0, 0 |
+| 65 to 96 | 8 closest enemy bullets: dx, dy, vx, vy | 32 | position / 600, speed / 600, empty = zeros |
+| 97 to 105 | 3 closest materials: dx, dy, distance | 9 | / 600, empty = 0, 0, 1 |
+| 106 to 113 | 2 closest pickups: dx, dy, distance, crate | 8 | / 600, crate 1 = item box, 0 = fruit. Empty = 0, 0, 1, 0 |
+| 114 to 121 | Enemy radar, 8 directions | 8 | see below |
+| 122 to 129 | Bullet radar, 8 directions | 8 | see below |
+| 130 | Time left in the wave | 1 | time left / wave length |
+| 131 to 144 | Build: max HP, armor, dodge, range, speed, attack speed, HP regen, life steal, damage %, crit chance, weapon count, wave, danger, melee share | 14 | stat / a typical big value (100, 30, 60, 400, 50, 100, 30, 50, 100, 100), weapons / 6, wave / 20, danger / 5, share of melee weapons. Read once per wave |
+| 145 to 160 | Spare | 16 | always 0, room to add things later without starting a new brain |
 
 Notes:
 * The sight range of 600 keeps close enemies easy to tell apart. Anything further reads as "far" (1).
-* 600 is also the fastest enemy bullet measured (waves 3 to 6 and wave 81).
+* **Radar:** the area around the player is split into 8 directions (right, then clockwise: down right, down, down left, left, up left, up, up right). Every enemy closer than 1000 (bullets: 600) adds 1 minus distance / range to its direction, divided by 5 and capped at 1. It counts every enemy and bullet on screen, so the AI knows which way is crowded even past the 8 closest.
+* **Why not every enemy:** the brain needs the same number of inputs every turn, and enemy counts go from 0 to 100+. Detail for the closest 8 plus a radar for everything keeps it small.
+* Enemy velocity is the enemy's physics velocity, so charges show up. Size is the radius of its hitbox, the same shape the game uses for knockback.
 * The mod also sends a small `info` block (HP, gold, enemy count, arena size and so on). The AI does not see it. `brotato_env.py` uses HP and gold from it to work out rewards.
 
 ## What the AI can do (9 moves)
@@ -77,7 +85,7 @@ Moves press the game's own movement actions (`button_move_left` and so on). The 
 
 Python sends the wanted speed with every move (`python listen.py 20` means 20x). The mod raises the game speed **and** the number of physics ticks per second together, so every tick is still the normal 1/60 s of game time. That keeps collisions accurate (bullets cannot skip through the player) and keeps one AI decision every 0.1 s of game time.
 
-Measured on the development laptop (GTX 1650):
+Measured on the development laptop (GTX 1650), early waves:
 
 | Asked | Actual, waves 1 to 6 |
 | --- | --- |
@@ -85,7 +93,7 @@ Measured on the development laptop (GTX 1650):
 | 12x | 11 to 12x |
 | 20x | 15 to 16x |
 
-So about 15x is the limit in early waves, roughly 150 decisions per second, or 1 million decisions in about 2 hours. Speed goes back to 1x in menus and when Python disconnects.
+**But use 4x for training.** At 12x the laptop could not keep up in long sessions: after a few minutes it dropped to about 12 turns per second, the whole computer lagged, and the AI played much worse (the same brain died around wave 7 at 12x and around wave 14 at 4x). At 4x it holds about 26 turns per second for hours, about 1 million turns in 11 hours. `train.py` warns above 4. Speed goes back to 1x in menus and when Python disconnects.
 
 ## Autopilot
 
@@ -163,7 +171,7 @@ What this means for weapons at 6 slots: an SMG is only bought if it can merge (s
 
 ## Rule bot (Phase 3 baseline)
 
-`rule_bot.py` is a hand written player that does not learn. It reads the same 73 numbers as the AI and is scored by the same rewards in `brotato_env.py`. Its score is the bar the trained AI has to beat: if the AI cannot beat it, something is wrong with training.
+`rule_bot.py` is a hand written player that does not learn. It reads the same numbers as the AI (only positions of enemies, bullets and materials) and is scored by the same rewards in `brotato_env.py`. Its score is the bar the trained AI has to beat: if the AI cannot beat it, something is wrong with training.
 
 Every turn (0.1 s of game time) it imagines all 9 moves and picks the one with the best score:
 
@@ -187,30 +195,40 @@ First result, Danger 1, runs ending at wave 12: won 5 of 5 finished runs, averag
 | Getting hit | minus 5 × (HP lost / max HP) |
 | Picking up a material (gold went up during a wave) | +0.05 per gold |
 | Clearing a wave | +3 |
+| Clearing a boss wave (11, 15, 18, 20) | +10 extra |
 | Clearing the last wave | +10, run ends |
-| Dying | minus 5, run ends |
+| Dying | minus 20, run ends |
 | Closer than 40 units to a wall | minus 0.02 per turn |
 
-These are starting values and will be tuned during training.
+Brain v2 changed dying from minus 5 to minus 20 and added the boss wave bonus. With v1, materials were two thirds of the reward and dying cost less than one wave of materials, so risking a death for materials near a boss paid off.
 
 ## The AI (`train.py`)
 
-PPO from Stable Baselines3. The brain is a small network, built twice side by side:
+PPO from Stable Baselines3. The brain is a network, built twice side by side:
 
-* **The player (policy):** 73 numbers in, 2 layers of 64, odds for the 9 moves out. During training it rolls the dice with those odds, so it keeps trying new things.
-* **The judge (value):** same input, 2 layers of 64, one number out: how much reward it expects from here on.
+* **The player (policy):** 161 numbers in, 2 layers of 256, odds for the 9 moves out. During training it rolls the dice with those odds, so it keeps trying new things.
+* **The judge (value):** same input, 2 layers of 256, one number out: how much reward it expects from here on.
 
 How it learns: it plays 2048 turns, then pauses the game (the mod waits, the game freezes for a few seconds). For each turn it compares what really happened afterwards with what the judge expected. Moves that went better than expected become more likely in that kind of situation, worse ones less likely, with each change capped so one lucky run can't wreck it. The judge's guesses get corrected too. Then it plays the next 2048 turns.
 
-Everything it learns is the network's numbers (about 18,400), saved to `models/latest.zip`. Running `train.py` again continues from that file. Backups go to `models/checkpoint_..._steps.zip` every 20,000 turns, and graphs to `tb_logs/` (`tensorboard --logdir tb_logs`, then open http://localhost:6006). Besides the library's own graphs (`rollout/ep_rew_mean`, `rollout/ep_len_mean` and so on) it adds `run/wave_reached` and `run/won`.
+Settings at the top of `train.py`: 2048 turns per learning pause, batches of 64, 10 passes per pause, learning rate 0.0003, **gamma 0.995** (the next ~20 s count, v1 used 0.99 = ~10 s), **entropy bonus 0.01** (explores more before settling, v1 used 0), network **[256, 256]** (v1 used [64, 64]). Learning uses at most 2 CPU cores so the rest of the computer stays smooth.
 
-The PPO settings (all library defaults) are written out at the top of `train.py`: 2048 turns per learning pause, batches of 64, 10 passes per pause, learning rate 0.0003, gamma 0.99.
+Files, all in `models/v2/` (the v1 brain stays in `models/latest.zip`):
 
-First test (Danger 5, 10 minutes at 12x): 24,222 turns, 9 runs reaching waves 6 to 9, no crashes. The judge's `explained_variance` went from minus 0.13 to 0.63, so learning works. About 38 turns per real second on the development laptop, so 1 million turns takes about 7 hours.
+* `latest.zip`: the brain at the end of the last session. Running `train.py` again continues from it.
+* `best.zip` and `best.json`: the brain with the best average reward over 20 runs in a row so far. "Latest" is not always "best".
+* `brain_info.json`: which layout version the brain was made for. Loading it with a different layout stops with a clear message.
+* `checkpoint_..._steps.zip`: backups every 20,000 turns.
 
-After every finished run `train.py` also writes one row to `runs.csv` (open it in Excel): wave, reward, turns, materials picked up (total and per wave), damage taken (in full health bars), share of time near a wall, and the reward split into its parts (alive, hit, material, wall, wave, won, died; they add up to the total). The same numbers go to TensorBoard as `run/...` and `reward_parts/...` graphs. The reward the AI gets is unchanged, it is only counted by part.
+After every finished run `train.py` writes:
 
-`watch.py` loads the saved brain and plays with no learning, at normal speed by default, always taking its best move (or rolling the dice like in training with `dice`).
+* one row to `runs_v2.csv` (open it in Excel): wave, reward, turns, materials (total and per wave), damage taken (in full health bars), share of time near a wall, and the reward split into its parts (alive, hit, material, wall, wave, boss, won, died).
+* on a death, one line to `deaths_v2.jsonl`: the last 50 turns (5 s) before it, each with the move, HP, closest enemy distance, speed and size, closest boss distance, closest bullet distance and enemy and bullet counts. Shows how it dies instead of guessing.
+* TensorBoard graphs (`tb_logs/`, run name `ppo_v2`): the library's own (`rollout/ep_rew_mean` and so on) plus `run/...` and `reward_parts/...`. Open with `tensorboard --logdir tb_logs`, then http://localhost:6006.
+
+`watch.py` loads the saved brain and plays with no learning, at normal speed by default, always taking its best move. Add `dice` to roll the dice like in training, `best` to play `best.zip`.
+
+Brain v1 history: Danger 5, about 500,000 turns, ending at an average death wave of 14.1 (2 hour session, 30 runs: 67% cleared wave 11, 33% cleared wave 15, 3 reached wave 20, 0 wins).
 
 ## Files
 
@@ -220,10 +238,10 @@ After every finished run `train.py` also writes one row to `runs.csv` (open it i
 | `make_test_mod.py` | Packs the mod into the zip Steam Brotato loads (Workshop folder) |
 | `brotato_env.py` | The adapter between the AI library and the game: Gymnasium `reset()` and `step()`, rewards, one episode per run |
 | `rule_bot.py` | Phase 3 baseline: a hand written bot that dodges, collects materials and avoids walls. Does not learn. Same output as `run_random.py`, so the two scores compare directly |
-| `train.py` | Phase 3: the learning AI (PPO). Trains for N minutes, saves the brain to `models/latest.zip`, continues from it next time, writes TensorBoard graphs to `tb_logs/` and everything it prints to `train_log.txt` |
-| `watch.py` | Loads the saved brain and plays with no learning, so you can watch what it learned |
+| `train.py` | The learning AI (PPO). Trains for N minutes, saves the brain to `models/v2/`, continues from it next time, keeps the best brain, writes `runs_v2.csv`, `deaths_v2.jsonl`, TensorBoard graphs and `train_log.txt` |
+| `watch.py` | Loads the saved brain (latest or best) and plays with no learning, so you can watch what it learned |
 | `run_random.py` | Phase 2 final test: random moves play runs through `brotato_env.py` for N minutes, prints one line per run, a run report (everything the autopilot bought, merged, picked on level ups and took from crates, with each item's stats, plus the final character stats) and a summary |
-| `listen.py` | Debug tool that stands in for the AI: prints what the mod sends in readable form, answers with random moves, times each wave |
+| `listen.py` | Debug tool that stands in for the AI: prints what the mod sends in readable form (a second line shows the v2 numbers: own speed, closest enemy speed, size and boss flag, radar, pickups, build), answers with random moves, times each wave |
 | `find_vars.py` | Searches the unpacked game code for the variables the mod needs |
 | `mod-icon.png` | Workshop icon for the mod |
 
@@ -247,11 +265,11 @@ Tested with Brotato 1.2.0.1 (Default Public Version), mod loader 6.3.0, Windows,
 1. Close Brotato (the mod only loads at game start).
 2. `python make_test_mod.py`
 3. One of:
-   * `python run_random.py 30 20` : random runs for 30 minutes at 20x through the Gymnasium env
-   * `python rule_bot.py 30 20` : rule bot runs for 30 minutes at 20x (the baseline the AI has to beat)
-   * `python train.py 480 12` : train the AI for 8 hours at 12x (continues from the saved brain)
-   * `python watch.py` : watch the saved brain play at normal speed (`python watch.py 2` for 2x, `python watch.py 1 dice` to let it roll the dice like in training)
-   * `python listen.py 20` : watch what the mod sends, at 20x
+   * `python run_random.py 30 4` : random runs for 30 minutes at 4x through the Gymnasium env
+   * `python rule_bot.py 30 4` : rule bot runs for 30 minutes at 4x (the baseline the AI has to beat)
+   * `python train.py 120 4` : train the AI for 2 hours at 4x (continues from the saved brain)
+   * `python watch.py` : watch the saved brain play at normal speed (`python watch.py 2` for 2x, `python watch.py 1 dice` to roll the dice like in training, `python watch.py 4 best` for the best brain)
+   * `python listen.py 1` : watch what the mod sends, at normal speed
 4. Start Brotato and don't touch anything.
 5. Stop with Ctrl+C.
 
@@ -267,4 +285,6 @@ Game logs (useful when something breaks): `%APPDATA%\Brotato\logs\godot.log`. Ev
 * **Don't pipe `train.py` into `Tee-Object`.** Ctrl+C then kills Python before it saves the brain. `train.py` writes its own `train_log.txt` instead.
 * **Let the wave 1 landing finish first.** Wave 1 starts with the potato dropping in by parachute. Freezing and speeding up the game during that animation sometimes left the potato stuck invisible in the air with its gun, so it died at wave 1 in about a second while enemies chased its health bar. The mod now waits for the landing animation to end before taking turns or speeding up.
 * **Raising `Engine.time_scale` alone is not enough** in Godot 3. It makes each physics tick bigger instead of adding ticks, which caps decisions and makes collisions coarse. Raise `Engine.iterations_per_second` with it.
+* **High speed can make the AI look worse than it is.** At 12x the laptop fell behind after a few minutes (about 12 turns per second, whole computer lagging) and the same brain died around wave 7 instead of wave 14 at 4x. Train at 4x. Reading files on the laptop through the Claude app during training is also a suspect for lag, so don't.
+* **The AI can only react to what it sees.** Brain v1 saw enemy positions but not their movement or size, so a charging boss looked the same as a standing one and a big boss looked farther away than its edge really was. It sometimes stood still while a boss hit it. Brain v2 sends enemy velocity, hitbox size and a boss flag.
 * **Ctrl+C on Windows** does not interrupt a Python socket that waits forever. `listen.py` waits in 0.5 s steps so Ctrl+C works.
