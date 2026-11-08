@@ -3,6 +3,7 @@
 It plays N_STEPS turns, pauses the game to learn from them, and repeats until the time is up.
 What it learned is saved in models/latest.zip, and the next run of this script continues from it.
 Graphs go to tb_logs/ (open them with: tensorboard --logdir tb_logs).
+Everything printed also goes to train_log.txt (added to the end, never overwritten).
 
 Usage:  python train.py [minutes] [speed]
         python train.py 10 12
@@ -23,6 +24,7 @@ SPEED = float(sys.argv[2]) if len(sys.argv) > 2 else 12.0
 MODEL_DIR = "models"
 LATEST = os.path.join(MODEL_DIR, "latest.zip")
 LOG_DIR = "tb_logs"
+LOG_FILE = "train_log.txt"
 CHECKPOINT_EVERY = 20_000   # turns between backup copies of the brain (about 6 minutes at your speed)
 
 # ---------- PPO settings (these are the library's defaults, written out so you can see them) ----------
@@ -34,6 +36,23 @@ GAMMA = 0.99            # how much later rewards count (0.99 per 0.1 s: the next
 NETWORK = [64, 64]      # 2 layers of 64, for both the player and the judge
 
 
+class Tee:
+    """Sends everything printed to both the terminal and train_log.txt."""
+
+    def __init__(self, terminal, path):
+        self.terminal = terminal
+        self.file = open(path, "a", encoding="utf-8")
+
+    def write(self, text):
+        self.terminal.write(text)
+        self.file.write(text)
+        self.file.flush()   # write it to disk right away, so the file is always up to date
+
+    def flush(self):
+        self.terminal.flush()
+        self.file.flush()
+
+
 class RunLogger(BaseCallback):
     """Adds our own graphs to TensorBoard: the wave each run reached, and how often it won."""
 
@@ -42,7 +61,7 @@ class RunLogger(BaseCallback):
             if done and info.get("end_reason") in ("died", "won"):
                 self.logger.record_mean("run/wave_reached", info["end_wave"])
                 self.logger.record_mean("run/won", 1.0 if info["end_reason"] == "won" else 0.0)
-                print(f"[train] run over: {info['end_reason']} at wave {info['end_wave']}")
+                print(f"[train] {time.strftime('%H:%M:%S')} run over: {info['end_reason']} at wave {info['end_wave']}")
         return True
 
 
@@ -76,6 +95,8 @@ def make_or_load_model(env):
 
 
 def main():
+    sys.stdout = Tee(sys.stdout, LOG_FILE)
+    print(f"\n========== training started {time.strftime('%Y-%m-%d %H:%M:%S')} ==========")
     os.makedirs(MODEL_DIR, exist_ok=True)
     env = BrotatoEnv(speed=SPEED, verbose=False)
     model = make_or_load_model(env)
@@ -94,7 +115,7 @@ def main():
         print("[train] stopped with Ctrl+C")
     finally:
         model.save(LATEST)
-        print(f"[train] saved to {LATEST} ({model.num_timesteps} turns learned in total)")
+        print(f"[train] {time.strftime('%H:%M:%S')} saved to {LATEST} ({model.num_timesteps} turns learned in total)")
         env.close()
 
 

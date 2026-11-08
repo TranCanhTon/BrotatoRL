@@ -16,3 +16,4 @@ save-backup/
 # Training output (trained brains and graphs, large and personal)
 models/
 tb_logs/
+train_log.txt
