@@ -33,6 +33,7 @@ const CHARACTER_ID = "well_rounded"  # part of the game's id for the character
 const WEAPON_ID = "smg"              # part of the game's id for the weapon
 const DANGER = 5
 const MAX_WEAPONS = 6
+const MAX_SHOP_ACTIONS = 40          # leave the shop after this many actions in one visit (anti stuck)
 const LAST_WAVE = 20                 # the run ends after clearing this wave (20 = last wave of a normal run)
 # level up: first one offered from this list wins, top to bottom.
 # names are the game's stat ids without "stat_" (see brotato-source/singletons/keys.gd)
@@ -72,6 +73,7 @@ var _ap_last_step = 0
 var _ap_warned = false
 var _ap_last_buy_price = 0   # price of the last thing bought in this shop visit (0 = nothing yet)
 var _ap_pending_upgrade = ""  # my_id of the better SMG to buy right after selling the weakest one
+var _ap_shop_actions = 0      # autopilot actions in this shop visit (safety net against getting stuck)
 var _run_log = []            # what the autopilot did this run, sent to Python when the run ends
 
 # character stats reported at the end of a run (names = game stat ids without "stat_")
@@ -389,6 +391,7 @@ func _process(_delta):
 		_ap_warned = false
 		_ap_last_buy_price = 0
 		_ap_pending_upgrade = ""
+		_ap_shop_actions = 0
 		return
 	if now - _ap_scene_since < SCENE_SETTLE_MS or now - _ap_last_step < AUTOPILOT_STEP_MS:
 		return
@@ -547,6 +550,12 @@ func _is_weapon(item):
 #      Reroll only if, after paying the reroll, there is still enough for that price.
 #      Before buying anything, "that price" is what a basic SMG costs this wave.
 func _ap_shop(shop):
+	# safety net: if something keeps failing (a buy the game refuses and so on), leave instead of looping forever
+	_ap_shop_actions += 1
+	if _ap_shop_actions > MAX_SHOP_ACTIONS:
+		_ap_leave_shop(shop, "stuck: more than " + str(MAX_SHOP_ACTIONS) + " actions in this visit")
+		return
+
 	if RunData.current_wave >= LAST_WAVE:
 		_ap_restart_run("cleared wave %d" % RunData.current_wave)
 		return
@@ -644,7 +653,7 @@ func _ap_lock_unaffordable(shop):
 		if _is_weapon(item):
 			wanted = WEAPON_ID in str(item.my_id)
 			if at_max:
-				wanted = wanted and (not RunData.get_combine_candidates(item, 0).empty() or _is_better_smg(item))
+				wanted = wanted and (RunData.can_combine(item, 0) or _is_better_smg(item))
 		else:
 			wanted = _item_rank(item) < 999
 		if wanted:
@@ -662,7 +671,8 @@ func _ap_find_mergeable_smg(items_box):
 		var item = shop_item.item_data
 		if not (_is_weapon(item) and WEAPON_ID in str(item.my_id)):
 			continue
-		if RunData.get_combine_candidates(item, 0).empty():
+		# can_combine also checks the max tier: a tier 4 SMG can never merge, even with another tier 4
+		if not RunData.can_combine(item, 0):
 			continue
 		if best == null or shop_item.value < best.value:
 			best = shop_item
