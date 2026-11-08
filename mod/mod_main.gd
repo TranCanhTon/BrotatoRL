@@ -48,6 +48,10 @@ const LEVEL_UP_PRIORITY = [
 	"crit_chance",     # Crit Chance
 	"hp_regeneration", # HP Regeneration
 ]
+# items the autopilot buys whenever it can afford them, before anything else (and locks when it can't)
+const ALWAYS_BUY = [
+	"item_tardigrade",    # blocks one hit per wave, stacks
+]
 # items the autopilot never buys or takes from crates (crates recycle them instead)
 const BANNED_ITEMS = [
 	"item_weird_ghost",   # +3 max HP, but you start the next wave with 1 HP
@@ -577,6 +581,14 @@ func _ap_shop(shop):
 				items_box.on_shop_item_buy_button_pressed(shop_item)
 				return
 
+	# always buy items (Tardigrade): first, whenever affordable, no money rule
+	for shop_item in items_box._shop_items:
+		if shop_item != null and shop_item.active and str(shop_item.item_data.my_id) in ALWAYS_BUY and gold >= shop_item.value:
+			print("BrotatoAI autopilot: buying ", shop_item.item_data.my_id, " for ", shop_item.value, " (always buy)")
+			_log_action("bought", shop_item.item_data, shop_item.value)
+			items_box.on_shop_item_buy_button_pressed(shop_item)
+			return
+
 	# All slots full and an SMG in the shop that matches one we own (same tier):
 	#   can afford it   -> buy it. The game merges it into the matching SMG by itself
 	#                      (its own "buy with full slots" route, no popup involved)
@@ -655,7 +667,7 @@ func _ap_lock_unaffordable(shop):
 			if at_max:
 				wanted = wanted and (RunData.can_combine(item, 0) or _is_better_smg(item))
 		else:
-			wanted = _item_rank(item) < 999
+			wanted = _item_rank(item) < 999 or str(item.my_id) in ALWAYS_BUY
 		if wanted:
 			print("BrotatoAI autopilot: locking ", item.my_id, " (costs ", shop_item.value, ", have ", gold, ")")
 			shop_item.change_lock_status(true)

@@ -112,6 +112,15 @@ Picks the first stat offered from this priority list, otherwise the first option
 8. Crit chance
 9. HP regeneration
 
+### Always buy
+Bought first whenever it can afford them, ignoring the money rule, and locked when it can't:
+
+| Item | Why |
+| --- | --- |
+| Tardigrade | Blocks one hit per wave, stacks. No normal stats, so the stat rule would never buy it |
+
+The list is `ALWAYS_BUY` near the top of `mod/mod_main.gd`.
+
 ### Banned items
 Never bought, and recycled when they come from a crate. Most have a hidden downside the stat check can't see:
 
@@ -145,6 +154,8 @@ One action every 0.25 s, in this order:
    * Before anything is bought in this visit, "that price" is what a basic SMG costs at the current wave (the game's own price formula).
 6. **Lock before leaving:** anything it would buy but cannot afford gets locked (the game's own lock button), so it is still in the shop next round: SMGs (at 6 weapons only ones that can merge or beat the weakest SMG) and items with a priority stat.
 7. Otherwise leave the shop.
+
+What this means for weapons at 6 slots: an SMG is only bought if it can merge (same tier as one owned, below tier 4) or beats the weakest SMG owned. So once all SMGs are tier 4 it stops buying weapons, and lower tier SMGs never get bought or locked.
 
 ### Death and restarts
 * "Retry wave" screen: ends the run instead of retrying.
