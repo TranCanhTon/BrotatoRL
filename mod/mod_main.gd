@@ -53,20 +53,31 @@ const MAX_SHOP_ACTIONS = 40          # leave the shop after this many actions in
 const LAST_WAVE = 20                 # the run ends after clearing this wave (20 = last wave of a normal run)
 # level up: first one offered from this list wins, top to bottom.
 # names are the game's stat ids without "stat_" (see brotato-source/singletons/keys.gd)
+# order picked by Ton: HP first, then damage, armor, ranged damage, then the rest
 const LEVEL_UP_PRIORITY = [
 	"max_hp",          # Max HP
-	"dodge",           # Dodge
+	"percent_damage",  # Damage %
 	"armor",           # Armor
 	"ranged_damage",   # Ranged Damage
-	"percent_damage",  # Damage %
 	"attack_speed",    # Attack Speed
+	"dodge",           # Dodge
 	"speed",           # Movement Speed
 	"crit_chance",     # Crit Chance
 	"hp_regeneration", # HP Regeneration
 ]
-# items the autopilot buys whenever it can afford them, before anything else (and locks when it can't)
+# items the autopilot buys whenever it can afford them, before anything else, every copy that shows up
+# (no money rule, and locked when it can't afford them). Picked by Ton from the wiki.
 const ALWAYS_BUY = [
-	"item_tardigrade",    # blocks one hit per wave, stacks
+	"item_alien_worm",      # +3 max HP, +2 HP regen, -1 HP from fruit
+	"item_bait",            # +8% damage, extra enemies next wave that drop extra materials
+	"item_coupon",          # -5% item prices (game allows 5)
+	"item_glass_cannon",    # +25% damage, -3 armor
+	"item_gummy_berserker", # +5% attack speed, +25 range, -1 armor
+	"item_injection",       # +7% damage, -2 max HP
+	"item_medal",           # +3 max HP, +3% damage, +1 armor, +3% speed, -4% crit
+	"item_leather_vest",    # +2 armor, +6% dodge, -3 max HP
+	"item_missile",         # +10% damage, -4% attack speed
+	"item_panda",           # +12 max HP, +25 luck, -5% damage
 ]
 # items the autopilot never buys or takes from crates (crates recycle them instead)
 const BANNED_ITEMS = [
@@ -77,6 +88,9 @@ const BANNED_ITEMS = [
 	"item_bloody_hand",
 	"item_estys_couch",
 ]
+# items with any of these game tags are banned too (unless in ALWAYS_BUY):
+# "pet" = Lootworm, Bonk Dog, Catling Gun and the other pets, "more_enemies" = Gentle Alien, Mouse and similar
+const BANNED_TAGS = ["pet", "more_enemies"]
 
 # which game script runs each screen (files in brotato-source)
 const SCRIPT_TITLE = "res://ui/menus/title_screen/title_screen.gd"
@@ -661,7 +675,15 @@ func _ap_crate(box):
 
 
 func _is_banned(item):
-	return item != null and str(item.my_id) in BANNED_ITEMS
+	if item == null or str(item.my_id) in ALWAYS_BUY:
+		return false
+	if str(item.my_id) in BANNED_ITEMS:
+		return true
+	if "tags" in item and item.tags != null:
+		for tag in item.tags:
+			if str(tag) in BANNED_TAGS:
+				return true
+	return false
 
 
 # Weapons have a "weapon_id" field, items don't. Avoids naming the WeaponData class.
@@ -707,7 +729,7 @@ func _ap_shop(shop):
 				items_box.on_shop_item_buy_button_pressed(shop_item)
 				return
 
-	# always buy items (Tardigrade): first, whenever affordable, no money rule
+	# always buy items (ALWAYS_BUY): first, whenever affordable, every copy, no money rule
 	for shop_item in items_box._shop_items:
 		if shop_item != null and shop_item.active and str(shop_item.item_data.my_id) in ALWAYS_BUY and gold >= shop_item.value:
 			print("BrotatoAI autopilot: buying ", shop_item.item_data.my_id, " for ", shop_item.value, " (always buy)")
