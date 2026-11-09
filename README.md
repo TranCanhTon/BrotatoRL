@@ -108,26 +108,37 @@ All settings live in one block near the top of `mod/mod_main.gd`.
 * The run ends on death or after clearing **wave 20** (the last wave of a normal run), then a new run starts with the same setup.
 
 ### Level ups
-Picks the first stat offered from this priority list, otherwise the first option:
+Picks the first stat offered from this priority list, otherwise the first option. The same list ranks shop items:
 
 1. Max HP
-2. Dodge
+2. Damage %
 3. Armor
 4. Ranged damage
-5. Damage %
-6. Attack speed
+5. Attack speed
+6. Dodge
 7. Movement speed
 8. Crit chance
 9. HP regeneration
 
+Damage moved up after watching brain v2 runs: the SMGs could not kill big enemies and bosses fast enough, and most deaths were crowds or bosses on waves 11 and 15.
+
 ### Always buy
-Bought first whenever it can afford them, ignoring the money rule, and locked when it can't:
+Bought first whenever it can afford them, every copy that shows up, before weapons, ignoring the money rule, and locked when it can't. Picked by hand from the wiki:
 
-| Item | Why |
+| Item | Effects |
 | --- | --- |
-| Tardigrade | Blocks one hit per wave, stacks. No normal stats, so the stat rule would never buy it |
+| Alien Worm | +3 max HP, +2 HP regen, minus 1 HP healed from fruit |
+| Bait | +8% damage, extra enemies next wave that drop extra materials |
+| Coupon | minus 5% item prices (the game allows 5) |
+| Glass Cannon | +25% damage, minus 3 armor |
+| Gummy Berserker | +5% attack speed, +25 range, minus 1 armor |
+| Injection | +7% damage, minus 2 max HP |
+| Medal | +3 max HP, +3% damage, +1 armor, +3% speed, minus 4% crit |
+| Leather Vest | +2 armor, +6% dodge, minus 3 max HP |
+| Missile | +10% damage, minus 4% attack speed |
+| Panda | +12 max HP, +25 luck, minus 5% damage |
 
-The list is `ALWAYS_BUY` near the top of `mod/mod_main.gd`.
+Most of these have a minus, so the normal stat rule would skip them. The list is `ALWAYS_BUY` near the top of `mod/mod_main.gd`. (Tardigrade used to be the only always buy item; it was removed.)
 
 ### Banned items
 Never bought, and recycled when they come from a crate. Most have a hidden downside the stat check can't see:
@@ -138,7 +149,14 @@ Never bought, and recycled when they come from a crate. Most have a hidden downs
 | Blood Donation | +40 harvesting, but you lose 1 HP every second |
 | Alien Baby, Ball and Chain, Bloody Hand, Esty's Couch | Picked by hand |
 
-The list is `BANNED_ITEMS` near the top of `mod/mod_main.gd`.
+Also banned, by the game's own item tags (`BANNED_TAGS`), so new items are caught too:
+
+| Tag | Items |
+| --- | --- |
+| `pet` | All pets: Lootworm, Blazemander, Bonk Dog, Catling Gun, Doc Moth, Bot-O-Mine, Jellyshield, Ratzilla, Scapegoat |
+| `more_enemies` | Items that add enemies: Gentle Alien, Mouse and similar |
+
+Items in the always buy list are never banned. The lists are `BANNED_ITEMS` and `BANNED_TAGS` near the top of `mod/mod_main.gd`.
 
 ### Crates (item boxes)
 Takes items, except banned ones. Recycles weapons, so weapons only come from the shop rule below.
@@ -155,7 +173,7 @@ One action every 0.25 s, in this order:
    * if not: lock it and leave the shop right away
 4. **Buy:**
    * Under **6 weapons**: buy the cheapest SMG it can afford.
-   * Otherwise, or if no SMG fits: buy items that give a stat from the priority list above. Items that lower any of those stats, and banned items, are skipped. The item whose best stat is highest in the list wins.
+   * Otherwise, or if no SMG fits: buy items that give a stat from the priority list above. Items that lower any of those stats, and banned items, are skipped (always buy items are handled before this step). The item whose best stat is highest in the list wins.
 5. **Money rule (per shop visit):**
    * After buying something, if the money left is less than what was just paid, leave the shop. Prices go up every wave, so it does not waste money on rerolls it cannot follow up on.
    * Only reroll if, after paying for the reroll, there is still enough money for that same price.
