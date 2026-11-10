@@ -121,6 +121,12 @@ class BrotatoEnv(gym.Env):
         while True:
             msg = self._read_message()
 
+            # a shop brain question (level up, crate, shop): answer it, keep waiting for the next turn.
+            # Checked first: questions have an "obs" too (the shop brain's numbers)
+            if "decision" in msg:
+                self._answer(msg)
+                continue
+
             # a normal turn: the game moved on 0.1 s
             if "obs" in msg:
                 info = msg["info"]
@@ -138,11 +144,6 @@ class BrotatoEnv(gym.Env):
                     self._stats["wall_turns"] += 1
                 self._remember(msg)
                 return self._last_obs, reward, False, False, dict(info)
-
-            # a shop brain question (level up, crate, shop): answer it, keep waiting for the next turn
-            if "decision" in msg:
-                self._answer(msg)
-                continue
 
             # the wave ended
             if msg.get("event") == "wave_end":
@@ -290,10 +291,10 @@ class BrotatoEnv(gym.Env):
         Shop brain questions are still answered (the game waits for them)."""
         while True:
             msg = self._read_message()
-            if "obs" in msg:
-                return msg
             if "decision" in msg:
                 self._answer(msg)
+            elif "obs" in msg:
+                return msg
 
     def _answer(self, msg):
         choice = int(self.shop.decide(msg))
