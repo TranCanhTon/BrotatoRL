@@ -308,6 +308,8 @@ def main():
         print(f"[train] {time.strftime('%H:%M:%S')} saved to {LATEST} ({model.num_timesteps} turns learned in total)")
         bridge.stop()
         shop_thread.join(timeout=120)
+        if shop_thread.is_alive():
+            print("[train] WARNING: the shop brain did not stop in time, it was NOT saved this session")
         env.close()
 
 

@@ -252,4 +252,12 @@ class ShopEnv(gym.Env):
         _, self._qid, self._obs, self._mask, _ = item
 
     def _next(self):
-        return self.bridge.to_brain.get()
+        """Next item from the game. Once train.py is stopping, always "stop" (the library may call
+        reset() or step() again after the first stop, and the stop item is only sent once)."""
+        while True:
+            if self.bridge.stopping.is_set() and self.bridge.to_brain.empty():
+                return ("stop",)
+            try:
+                return self.bridge.to_brain.get(timeout=0.5)
+            except queue.Empty:
+                continue
