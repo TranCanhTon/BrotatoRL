@@ -5,6 +5,7 @@ import socket
 import sys
 import time
 
+from shop_env import random_choice, choice_name
 from brotato_env import (HOST, PORT, OBS_SIZE, WALLS, HP, OWN_VELOCITY, ENEMIES, ENEMY_LEN, BULLETS,
                          MATERIALS, CONSUMABLES, RADAR_ENEMIES, RADAR_BULLETS, TIME_LEFT, BUILD)
 PRINT_EVERY = 5   # print 1 of every 5 turns (every 0.5s game time)
@@ -151,6 +152,14 @@ def serve():
         with conn:
             for line in read_lines(conn):
                 d = json.loads(line)
+                if "decision" in d:
+                    # shop brain question (level up, crate, shop): answer at random so the game goes on
+                    choice = random_choice(d["mask"])
+                    conn.sendall((json.dumps({"choice": choice}) + "\n").encode("utf-8"))
+                    info = d.get("info", {})
+                    print(f"--- {d['decision']} at wave {info.get('wave')}: {len(d['obs'])} numbers, "
+                          f"options {info.get('options')}, random pick: {choice_name(d['decision'], choice)} ---")
+                    continue
                 if "event" in d:
                     # wave end message from the mod, no answer needed
                     outcome = "DIED" if d["dead"] else ("left the wave" if d["aborted"] else "cleared")

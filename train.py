@@ -11,6 +11,10 @@ Everything printed also goes to train_log.txt (added to the end, never overwritt
 One row per finished run goes to runs_v2.csv (open it in Excel): wave, reward, materials, damage and so on.
 The last 5 s before every death go to deaths_v2.jsonl (one line per death).
 
+The shop brain (level ups, crates, shop) learns at the same time, in its own thread (see shop_env.py).
+It lives in models/shop_v1/ (latest.zip, checkpoints), graphs in tb_logs/ as shop_v1_...,
+and every run's questions and picks go to decisions.jsonl.
+
 Usage:  python train.py [minutes] [speed]
         python train.py 10 4
 """
@@ -22,11 +26,17 @@ import os
 import sys
 import time
 
+import threading
+import traceback
+
 import torch
+from sb3_contrib import MaskablePPO
 from stable_baselines3 import PPO
 from stable_baselines3.common.callbacks import BaseCallback, CheckpointCallback
+from stable_baselines3.common.vec_env import DummyVecEnv, VecMonitor
 
 from brotato_env import BrotatoEnv, OBS_SIZE, OBS_VERSION
+from shop_env import ShopBridge, ShopEnv, SHOP_OBS_SIZE, SHOP_OBS_VERSION
 
 MINUTES = float(sys.argv[1]) if len(sys.argv) > 1 else 10.0
 SPEED = float(sys.argv[2]) if len(sys.argv) > 2 else 4.0
@@ -55,6 +65,18 @@ GAMMA = 0.995           # how much later rewards count (0.995 per 0.1 s: the nex
 ENT_COEF = 0.01         # small bonus for trying different moves, so it explores before settling (was 0)
 NETWORK = [256, 256]    # 2 layers of 256, for both the player and the judge (was 64: more inputs need more room)
 CPU_THREADS = 2         # cores Python may use while learning, so the rest of the computer stays smooth
+
+# ---------- shop brain ----------
+SHOP_DIR = os.path.join("models", f"shop_v{SHOP_OBS_VERSION}")
+SHOP_LATEST = os.path.join(SHOP_DIR, "latest.zip")
+SHOP_N_STEPS = 256          # decisions before each learning pause (about 2 to 3 runs)
+SHOP_BATCH_SIZE = 64
+SHOP_N_EPOCHS = 10
+SHOP_LEARNING_RATE = 3e-4
+SHOP_GAMMA = 0.99           # per decision: about the next 100 decisions (~15 waves) matter
+SHOP_ENT_COEF = 0.01
+SHOP_NETWORK = [128, 128]
+SHOP_CHECKPOINT_EVERY = 2_000   # decisions between backups (about 15 to 20 runs)
 
 
 class Tee:
@@ -211,12 +233,60 @@ def make_or_load_model(env):
     )
 
 
+class StopWhenAsked(BaseCallback):
+    """Stops the shop brain's learning once train.py is finishing."""
+
+    def __init__(self, bridge):
+        super().__init__()
+        self.bridge = bridge
+
+    def _on_step(self):
+        return not self.bridge.stopping.is_set()
+
+
+def make_or_load_shop_model(bridge):
+    """Continue from models/shop_v1/latest.zip if it exists, otherwise a fresh shop brain."""
+    env = VecMonitor(DummyVecEnv([lambda: ShopEnv(bridge)]))
+    if os.path.exists(SHOP_LATEST):
+        print(f"[train] shop brain: continuing from {SHOP_LATEST}")
+        return MaskablePPO.load(SHOP_LATEST, env=env, device="cpu", tensorboard_log=LOG_DIR)
+    print("[train] shop brain: none saved yet, starting fresh (it will pick at random at first)")
+    return MaskablePPO(
+        "MlpPolicy", env,
+        n_steps=SHOP_N_STEPS, batch_size=SHOP_BATCH_SIZE, n_epochs=SHOP_N_EPOCHS,
+        learning_rate=SHOP_LEARNING_RATE, gamma=SHOP_GAMMA, ent_coef=SHOP_ENT_COEF,
+        policy_kwargs={"net_arch": SHOP_NETWORK},
+        tensorboard_log=LOG_DIR, device="cpu", verbose=0,
+    )
+
+
+def run_shop_brain(bridge, shop_model):
+    """The shop brain's own thread: learns from the questions the game asks, until train.py stops."""
+    callbacks = [StopWhenAsked(bridge),
+                 CheckpointCallback(save_freq=SHOP_CHECKPOINT_EVERY, save_path=SHOP_DIR, name_prefix="checkpoint")]
+    try:
+        shop_model.learn(total_timesteps=10**9, callback=callbacks, tb_log_name=f"shop_v{SHOP_OBS_VERSION}",
+                         reset_num_timesteps=False)
+    except Exception:
+        print("[train] shop brain crashed:")
+        traceback.print_exc()
+    finally:
+        shop_model.save(SHOP_LATEST)
+        print(f"[train] {time.strftime('%H:%M:%S')} shop brain saved to {SHOP_LATEST} "
+              f"({shop_model.num_timesteps} decisions learned in total)")
+
+
 def main():
     sys.stdout = Tee(sys.stdout, LOG_FILE)
     torch.set_num_threads(CPU_THREADS)
     print(f"\n========== training started {time.strftime('%Y-%m-%d %H:%M:%S')} (brain v{OBS_VERSION}) ==========")
     os.makedirs(MODEL_DIR, exist_ok=True)
-    env = BrotatoEnv(speed=SPEED, verbose=False)
+    os.makedirs(SHOP_DIR, exist_ok=True)
+    bridge = ShopBridge()
+    shop_model = make_or_load_shop_model(bridge)
+    shop_thread = threading.Thread(target=run_shop_brain, args=(bridge, shop_model), daemon=True)
+    shop_thread.start()
+    env = BrotatoEnv(speed=SPEED, verbose=False, shop=bridge)
     model = make_or_load_model(env)
     print(f"[train] training for {MINUTES:g} minutes at {SPEED:g}x. Start Brotato now, then don't touch anything.")
     print("[train] the game freezes for a few seconds every 2048 turns while the AI learns, that's normal.")
@@ -236,6 +306,8 @@ def main():
     finally:
         model.save(LATEST)
         print(f"[train] {time.strftime('%H:%M:%S')} saved to {LATEST} ({model.num_timesteps} turns learned in total)")
+        bridge.stop()
+        shop_thread.join(timeout=120)
         env.close()
 
 

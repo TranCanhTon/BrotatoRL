@@ -14,7 +14,7 @@ A Godot mod inside the game sends what is happening on screen to Python, Python 
 | 2. Connection | Mod and Python talk, Python controls movement, speed up, autopilot, Gymnasium env | Built. Final 30 minute test left |
 | 3. Brain | Rule bot baseline, PPO agent, watch tool | Done: rule bot, `train.py` (10 minute test passed), `watch.py` |
 | 4. Training | Long training runs, watch, tune rewards and settings | In progress: brain v2 training from zero |
-| 5. Shop and higher waves | Smarter shop | Rule based shop already in the autopilot |
+| 5. Shop and higher waves | Shop brain: a second AI picks level ups, crates and shop actions | Built, first training next |
 
 Already working: the autopilot plays full runs back to back (random moves, the rule bot or the AI steering), and the AI trains through it.
 
@@ -61,8 +61,8 @@ All numbers are scaled to 0..1 or minus 1..1. Empty slots are filled so they mea
 | 114 to 121 | Enemy radar, 8 directions | 8 | see below |
 | 122 to 129 | Bullet radar, 8 directions | 8 | see below |
 | 130 | Time left in the wave | 1 | time left / wave length |
-| 131 to 144 | Build: max HP, armor, dodge, range, speed, attack speed, HP regen, life steal, damage %, crit chance, weapon count, wave, danger, melee share | 14 | stat / a typical big value (100, 30, 60, 400, 50, 100, 30, 50, 100, 100), weapons / 6, wave / 20, danger / 5, share of melee weapons. Read once per wave |
-| 145 to 160 | Spare | 16 | always 0, room to add things later without starting a new brain |
+| 131 to 144 | Build: max HP, armor, dodge, range, speed, attack speed, HP regen, life steal, damage %, crit chance, weapon count, wave, danger, melee share | 14 | stat / a typical big value (100, 30, 60, 400, 50, 100, 30, 50, 100, 100), weapons / 6, wave / 20, danger / 5, share of melee weapons. Read once per wave with `Utils.get_stat` (the stats panel total, including scaling bonuses like Power Generator; before phase 5 the scaling part was missing) |
+| 145 to 160 | Secondary stats | 16 | luck, harvesting, engineering, melee, ranged and elemental damage, XP gain, % enemies, enemy health, enemy damage, enemy speed, pickup range, knockback, piercing, bounce, HP lost per second. Read once per wave. These slots were always 0 before phase 5, so the brain kept its training |
 
 Notes:
 * The sight range of 600 keeps close enemies easy to tell apart. Anything further reads as "far" (1).
@@ -107,81 +107,29 @@ All settings live in one block near the top of `mod/mod_main.gd`.
 * Danger: **5**
 * The run ends on death or after clearing **wave 20** (the last wave of a normal run), then a new run starts with the same setup.
 
-### Level ups
-Picks the first stat offered from this priority list, otherwise the first option. The same list ranks shop items:
+### Shop brain (level ups, crates, shop)
+Since phase 5 a second AI, the **shop brain**, makes every pick between waves: which level up to take, whether to take or recycle a crate item, and what to do in the shop. It learns at the same time as the movement brain (see `shop_env.py` and "The shop brain" below). The old hand written rules (priority list, always buy list, ban lists, money rule) are gone.
 
-1. Max HP
-2. Damage %
-3. Armor
-4. Ranged damage
-5. Attack speed
-6. Dodge
-7. Movement speed
-8. Crit chance
-9. HP regeneration
+* **Level up:** picks one of the (up to 4) upgrades.
+* **Crate:** take or recycle. Weapons from crates are always recycled.
+* **Shop:** one action at a time: buy slot 1 to 4, lock slot 1 to 4, reroll, or leave. Weapons other than SMGs can't be bought. A 7th SMG can only be bought when the game can merge it into one it owns.
+* **After it leaves** (or after 40 actions in one visit), the **SMG rules** spend what is left:
+  * Under **6 weapons**: buy the cheapest SMG it can afford.
+  * At 6 weapons: buy an SMG the game can merge into one it owns, or sell the weakest SMG for a higher tier one if gold plus the sale covers it.
+  * Then lock SMGs it wanted but could not afford, and press Go.
+* After the last wave, level ups take the first option (the run is already over for the brain) and the shop restarts the run.
 
-Damage moved up after watching brain v2 runs: the SMGs could not kill big enemies and bosses fast enough, and most deaths were crowds or bosses on waves 11 and 15.
+### Item pool (137 items)
+At the start of every wave the mod takes every item it can't describe to the shop brain out of the game's shop and crate pool, so they never show up. Kept (`ALLOWED_ITEMS` in `mod/mod_main.gd`, made from `items_report.json` by `scan_items.py`):
 
-### Always buy
-Bought first whenever it can afford them, every copy that shows up, before weapons, ignoring the money rule, and locked when it can't. Picked by hand from the wiki:
+* Items whose every effect is a stat the brain can see, including secondary stats (XP gain, % enemies, enemy health, HP lost per second, Weird Ghost's HP at the start of the next wave...).
+* Items whose stats arrive later: every wave (Vigilante Ring, Robot Arm, Grind's Magical Leaf, Celery Tea), next wave only (Peacock, Celery Tea), every level up (Decomposing Flesh).
+* 13 scaling items whose bonus the try on shows: Padding, Coil, Power Generator, Stone Skin, Strange Book, Bloody Hand, Esty's Couch, Lucky Coin, Retromations Hoodie, Fairy, Jelly, Focus, Spider.
 
-| Item | Effects |
-| --- | --- |
-| Alien Worm | +3 max HP, +2 HP regen, minus 1 HP healed from fruit |
-| Bait | +8% damage, extra enemies next wave that drop extra materials |
-| Coupon | minus 5% item prices (the game allows 5) |
-| Glass Cannon | +25% damage, minus 3 armor |
-| Gummy Berserker | +5% attack speed, +25 range, minus 1 armor |
-| Injection | +7% damage, minus 2 max HP |
-| Medal | +3 max HP, +3% damage, +1 armor, +3% speed, minus 4% crit |
-| Leather Vest | +2 armor, +6% dodge, minus 3 max HP |
-| Missile | +10% damage, minus 4% attack speed |
-| Panda | +12 max HP, +25 luck, minus 5% damage |
-
-Most of these have a minus, so the normal stat rule would skip them. The list is `ALWAYS_BUY` near the top of `mod/mod_main.gd`. (Tardigrade used to be the only always buy item; it was removed.)
-
-### Banned items
-Never bought, and recycled when they come from a crate. Most have a hidden downside the stat check can't see:
-
-| Item | Why |
-| --- | --- |
-| Weird Ghost | +3 max HP, but you start the next wave with 1 HP |
-| Blood Donation | +40 harvesting, but you lose 1 HP every second |
-| Alien Baby, Ball and Chain, Bloody Hand, Esty's Couch | Picked by hand |
-
-Also banned, by the game's own item tags (`BANNED_TAGS`), so new items are caught too:
-
-| Tag | Items |
-| --- | --- |
-| `pet` | All pets: Lootworm, Blazemander, Bonk Dog, Catling Gun, Doc Moth, Bot-O-Mine, Jellyshield, Ratzilla, Scapegoat |
-| `more_enemies` | Items that add enemies: Gentle Alien, Mouse and similar |
-
-Items in the always buy list are never banned. The lists are `BANNED_ITEMS` and `BANNED_TAGS` near the top of `mod/mod_main.gd`.
+Taken out for now: turrets and structures, pets, items with special effects (heal on dodge, explode on death, Bait, Tardigrade, Candy Bag...), items whose bonus only exists during a wave (Community Support, Fried Rice, Ice Cube...), and "while standing still" or "on hit" items (Barricade, Chameleon, Statue, Triangle of Power, Anvil). Primal Dread DLC items are not in the game here.
 
 ### Crates (item boxes)
-Takes items, except banned ones. Recycles weapons, so weapons only come from the shop rule below.
-
-### Shop
-One action every 0.25 s, in this order:
-
-1. **After the last wave:** restart the run.
-2. **All 6 slots full and an SMG in the shop with the same tier as one it owns:**
-   * if it can afford it: buy it, and the game merges it into the matching SMG by itself
-   * if not: lock it and leave the shop right away
-3. **All 6 slots full and an SMG in the shop with a higher tier than its weakest SMG:**
-   * if gold plus what the weakest SMG sells for covers it: sell the weakest, then buy the better one
-   * if not: lock it and leave the shop right away
-4. **Buy:**
-   * Under **6 weapons**: buy the cheapest SMG it can afford.
-   * Otherwise, or if no SMG fits: buy items that give a stat from the priority list above. Items that lower any of those stats, and banned items, are skipped (always buy items are handled before this step). The item whose best stat is highest in the list wins.
-5. **Money rule (per shop visit):**
-   * After buying something, if the money left is less than what was just paid, leave the shop. Prices go up every wave, so it does not waste money on rerolls it cannot follow up on.
-   * Only reroll if, after paying for the reroll, there is still enough money for that same price.
-   * Before anything is bought in this visit, "that price" is what a basic SMG costs at the current wave (the game's own price formula).
-6. **Lock before leaving:** anything it would buy but cannot afford gets locked (the game's own lock button), so it is still in the shop next round: SMGs (at 6 weapons only ones that can merge or beat the weakest SMG) and items with a priority stat.
-7. Otherwise leave the shop.
-
-What this means for weapons at 6 slots: an SMG is only bought if it can merge (same tier as one owned, below tier 4) or beats the weakest SMG owned. So once all SMGs are tier 4 it stops buying weapons, and lower tier SMGs never get bought or locked.
+Decided by the shop brain (take or recycle). Weapons are always recycled, so weapons only come from the SMG rules.
 
 ### Death and restarts
 * "Retry wave" screen: ends the run instead of retrying.
@@ -248,6 +196,33 @@ After every finished run `train.py` writes:
 
 Brain v1 history: Danger 5, about 500,000 turns, ending at an average death wave of 14.1 (2 hour session, 30 runs: 67% cleared wave 11, 33% cleared wave 15, 3 reached wave 20, 0 wins).
 
+## The shop brain (`shop_env.py`)
+
+A second, separate AI for everything between waves (phase 5). It is MaskablePPO from `sb3-contrib`: PPO that is told which choices are allowed right now, so it never wastes time on impossible ones (buying what it can't afford, a shop button during a level up).
+
+**What it sees (479 numbers, shop layout version 1):**
+
+| Index | What | Count |
+| --- | --- | --- |
+| 0 to 2 | Decision: shop, level up, crate | 3 |
+| 3 to 12 | Gold, wave, level, reroll price / gold, SMG count, SMG mean tier, best SMG tier, actions this shop visit, items owned, HP now | 10 |
+| 13 to 16 | Last wave: kills, HP lost (in full health bars), gold picked up, HP at the end | 4 |
+| 17 to 60 | Own stats now: the 16 primary stats plus 28 secondary ones (XP gain, % enemies, enemy health and damage, pickup range, item price, HP lost per second, HP at next wave start...) | 44 |
+| 61 to 102 | Own "later" pages: what the build gains every wave, next wave only, and every level up (14 stats each) | 42 |
+| 103 to 478 | 4 options (shop slots, level up cards or the crate item), 94 numbers each | 376 |
+
+Each option: present, SMG, other weapon, price / gold, affordable, locked, tier, copies owned, then **what it would change on every stat right now** (44), then what it writes on the "later" pages (42).
+
+**The try on:** before every question the mod puts each offered item's effects on the character, reads all 44 stats, takes them off again and checks that nothing was left behind (a WARNING line in the game log if something was). That gives the exact change for this build, including scaling items (Power Generator's damage from speed) and combos (a speed item shows extra damage when Power Generator is owned). It uses the effects directly, not the game's "add item", so no challenges, item counts or appearances are touched.
+
+**Choices (10):** shop: buy slot 1 to 4, lock slot 1 to 4, reroll, leave. Level up: pick 1 to 4. Crate: take, recycle.
+
+**Reward:** +1 for every wave cleared after a decision, +2 extra for boss waves (11, 15, 18, 20), +5 extra for winning. Nothing for dying: the waves just stop coming.
+
+**Training:** runs in its own thread inside `train.py`. Learns every 256 decisions (about every 2 to 3 runs), batches of 64, 10 passes, learning rate 0.0003, gamma 0.99 per decision (about the next 15 waves count), entropy bonus 0.01, network [128, 128]. Saved in `models/shop_v1/` (`latest.zip`, checkpoints every 2,000 decisions). TensorBoard run name `shop_v1`. After every run it prints one line (decisions, items bought, locks, rerolls, crates taken) and writes the run's questions and picks to `decisions.jsonl`.
+
+The movement brain and the shop brain share no network. They see the same stats (both read them the same way) and both work towards the same goal, clearing as many waves as possible.
+
 ## Files
 
 | File | What it does |
@@ -257,7 +232,9 @@ Brain v1 history: Danger 5, about 500,000 turns, ending at an average death wave
 | `brotato_env.py` | The adapter between the AI library and the game: Gymnasium `reset()` and `step()`, rewards, one episode per run |
 | `rule_bot.py` | Phase 3 baseline: a hand written bot that dodges, collects materials and avoids walls. Does not learn. Same output as `run_random.py`, so the two scores compare directly |
 | `train.py` | The learning AI (PPO). Trains for N minutes, saves the brain to `models/v2/`, continues from it next time, keeps the best brain, writes `runs_v2.csv`, `deaths_v2.jsonl`, TensorBoard graphs and `train_log.txt` |
-| `watch.py` | Loads the saved brain (latest or best) and plays with no learning, so you can watch what it learned |
+| `shop_env.py` | The shop brain: its layout, rewards, the bridge between the game thread and the learning thread, a random shop (for `run_random.py`, `rule_bot.py`, `listen.py`) and a frozen one (for `watch.py`) |
+| `scan_items.py` | Reads every item file in the decompiled game and writes `items_report.json` (id, tier, price, tags, every effect). Used to build the item pool |
+| `watch.py` | Loads the saved brains (movement latest or best, shop latest) and plays with no learning, so you can watch what they learned. Menus are clicked slowly and the button about to be pressed lights up first |
 | `run_random.py` | Phase 2 final test: random moves play runs through `brotato_env.py` for N minutes, prints one line per run, a run report (everything the autopilot bought, merged, picked on level ups and took from crates, with each item's stats, plus the final character stats) and a summary |
 | `listen.py` | Debug tool that stands in for the AI: prints what the mod sends in readable form (a second line shows the v2 numbers: own speed, closest enemy speed, size and boss flag, radar, pickups, build), answers with random moves, times each wave |
 | `find_vars.py` | Searches the unpacked game code for the variables the mod needs |
@@ -273,7 +250,7 @@ Tested with Brotato 1.2.0.1 (Default Public Version), mod loader 6.3.0, Windows,
    ```
    python -m venv venv
    venv\Scripts\activate
-   pip install stable-baselines3 gymnasium numpy tensorboard
+   pip install stable-baselines3 sb3-contrib gymnasium numpy tensorboard
    ```
 2. **Mod loading:** Steam Brotato only loads mods from the Steam Workshop, not from the local `mods` folder. The mod is uploaded as a hidden Workshop item and subscribed to. `make_test_mod.py` overwrites the zip inside that Workshop item's folder (`steamapps/workshop/content/1942280/<item id>`). Adjust the paths at the top of the script for your machine.
 3. In the game options, turn **"mouse only" off**.
@@ -297,7 +274,9 @@ Game logs (useful when something breaks): `%APPDATA%\Brotato\logs\godot.log`. Ev
 
 * **Never name Brotato classes in the mod** (`Shop`, `WeaponData`, `TitleScreen` and so on). Godot then loads those scripts while the mod starts, the shop script fails that early, the mod fails, and the game restarts itself with mods disabled ("Recovering from unexpected error in mod... Mods have been temporarily disabled"). The mod recognises screens by their script file path instead.
 * **Don't read game objects after a wave ends.** The game deletes its bullet container when a wave ends. Reading it afterwards reads freed memory and can crash the game. The mod stops taking turns as soon as the game starts cleaning up.
-* **Some items have hidden downsides** that aren't stats (Weird Ghost sets HP to 1 for the next wave, Blood Donation drains 1 HP per second). The game marks those effects as bad (`effect_sign = 1`) in the item files. For now they go on a hand made ban list.
+* **Some items have hidden downsides** that aren't in the stats panel (Weird Ghost sets HP to 1 for the next wave, Blood Donation drains 1 HP per second). They are still numbers in the game's effect list (`hp_start_next_wave`, `lose_hp_per_second`), so the shop brain sees them.
+* **Read stats with `Utils.get_stat`, not `RunData.get_stat`.** `RunData.get_stat` misses scaling bonuses (Power Generator, Padding...), which live in `LinkedStats`.
+* **Some items write on "later" pages** (`stats_end_of_wave`, `stats_next_wave`, `stats_on_level_up` in the character's effect list), so trying them on shows nothing now. The mod reads those pages separately.
 * **A tier 4 SMG can never merge.** `RunData.get_combine_candidates` still lists a matching tier 4 SMG, so the autopilot kept "buying" one the game refused, about 160,000 times in a row, and training stalled overnight. The mod now asks `RunData.can_combine`, which also checks the max tier, and leaves the shop after 40 actions in one visit no matter what.
 * **Windows throttles background programs.** Training ran at about 44 turns per second while the game window was active, and dropped to about 12 as soon as another window was clicked. Fix: `powercfg /powerthrottling disable /path <exe>` (as administrator) for `Brotato.exe` and the venv's `python.exe`, and power mode Best performance.
 * **Don't pipe `train.py` into `Tee-Object`.** Ctrl+C then kills Python before it saves the brain. `train.py` writes its own `train_log.txt` instead.

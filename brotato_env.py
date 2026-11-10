@@ -6,6 +6,10 @@ When a wave ends the mod sends a "wave_end" message (died, cleared or aborted).
 The mod's autopilot handles menus, level ups, shop and restarts by itself.
 
 One episode = one run: from wave 1 until the player dies or clears LAST_WAVE.
+
+Between waves the mod asks the shop brain questions (level ups, crates, shop). They arrive here in the
+middle of a step() and are handed to the "shop" object (see shop_env.py), which answers them.
+Without a shop object the answers are random.
 """
 
 import json
@@ -15,6 +19,8 @@ from collections import deque
 import gymnasium as gym
 import numpy as np
 from gymnasium import spaces
+
+from shop_env import RandomShop
 
 HOST = "127.0.0.1"
 PORT = 9876
@@ -55,12 +61,14 @@ DEATH_LOG_TURNS = 50         # remember the last 5 s of every run for the death 
 class BrotatoEnv(gym.Env):
     metadata = {"render_modes": []}
 
-    def __init__(self, speed=20.0, verbose=True):
+    def __init__(self, speed=20.0, verbose=True, watch=False, shop=None):
         super().__init__()
         self.observation_space = spaces.Box(low=-1.0, high=1.0, shape=(OBS_SIZE,), dtype=np.float32)
         self.action_space = spaces.Discrete(N_MOVES)
         self.speed = float(speed)
         self.verbose = verbose
+        self.watch = watch   # True = watch.py: the mod clicks slower in menus and highlights what it picks
+        self.shop = shop if shop is not None else RandomShop()   # answers the shop brain questions
 
         self._server = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
         self._server.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
@@ -131,6 +139,11 @@ class BrotatoEnv(gym.Env):
                 self._remember(msg)
                 return self._last_obs, reward, False, False, dict(info)
 
+            # a shop brain question (level up, crate, shop): answer it, keep waiting for the next turn
+            if "decision" in msg:
+                self._answer(msg)
+                continue
+
             # the wave ended
             if msg.get("event") == "wave_end":
                 self._report = msg.get("report")   # only on the last wave of a run
@@ -139,6 +152,7 @@ class BrotatoEnv(gym.Env):
                     return self._end_run(reward + REWARD_DIED, "died", msg["wave"], terminated=True)
                 if msg["aborted"]:
                     return self._end_run(reward, "left the wave", msg["wave"], terminated=False)
+                self.shop.on_wave_cleared(msg["wave"], msg["last_wave"])
                 reward += REWARD_WAVE_CLEARED
                 self._stats["waves_cleared"] += 1
                 self._stats["reward_wave"] += REWARD_WAVE_CLEARED
@@ -224,6 +238,7 @@ class BrotatoEnv(gym.Env):
         # terminated = real end of a run (died or won). truncated = cut short (quit, disconnect).
         self._run_over = True
         self._log(f"run over: {why} at wave {wave}")
+        self.shop.on_run_end(why if why in ("died", "won") else "cut short", wave)
         info = dict(self._last_info)
         info.update({"end_reason": why, "end_wave": wave, "report": self._report, "stats": dict(self._stats),
                      "last_turns": list(self._recent)})
@@ -271,14 +286,24 @@ class BrotatoEnv(gym.Env):
         return json.loads(line.decode("utf-8"))
 
     def _next_turn(self):
-        """Skip anything that isn't a turn (wave ends, disconnects) until the game sends a turn."""
+        """Skip anything that isn't a turn (wave ends, disconnects) until the game sends a turn.
+        Shop brain questions are still answered (the game waits for them)."""
         while True:
             msg = self._read_message()
             if "obs" in msg:
                 return msg
+            if "decision" in msg:
+                self._answer(msg)
+
+    def _answer(self, msg):
+        choice = int(self.shop.decide(msg))
+        try:
+            self._conn.sendall((json.dumps({"choice": choice}) + "\n").encode("utf-8"))
+        except (OSError, AttributeError):
+            self._conn = None
 
     def _send_move(self, action):
-        msg = json.dumps({"action": int(action), "speed": self.speed}) + "\n"
+        msg = json.dumps({"action": int(action), "speed": self.speed, "watch": self.watch}) + "\n"
         try:
             self._conn.sendall(msg.encode("utf-8"))
         except (OSError, AttributeError):

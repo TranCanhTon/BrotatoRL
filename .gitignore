@@ -19,3 +19,7 @@ tb_logs/
 train_log.txt
 runs*.csv
 deaths*.jsonl
+
+# Shop brain output and the item scan (made from the copyrighted game files)
+decisions.jsonl
+items_report.json

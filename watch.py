@@ -1,6 +1,9 @@
 """Watch the trained AI play. Loads models/v2/latest.zip and plays runs. No learning, nothing is saved.
 
 By default it always takes the move it rates best, which shows what it has really learned.
+Level ups, crates and the shop are clicked slowly, and the button about to be pressed lights up first.
+The shop brain (models/shop_v1/latest.zip) makes those picks and prints each one. Without a saved
+shop brain the picks are random.
 Add "dice" to let it roll the dice with its odds instead, the way it plays during training.
 Add "best" to play models/v2/best.zip (best average so far) instead of latest.zip.
 
@@ -18,14 +21,18 @@ import time
 
 from stable_baselines3 import PPO
 
+from sb3_contrib import MaskablePPO
+
 from brotato_env import BrotatoEnv, OBS_VERSION
 from run_random import print_report, print_summary
+from shop_env import FrozenShop, RandomShop, SHOP_OBS_VERSION
 
 ARGS = sys.argv[1:]
 NUMBERS = [a for a in ARGS if a.replace(".", "", 1).isdigit()]
 SPEED = float(NUMBERS[0]) if NUMBERS else 1.0
 DICE = "dice" in ARGS
 MODEL = os.path.join("models", f"v{OBS_VERSION}", "best.zip" if "best" in ARGS else "latest.zip")
+SHOP_MODEL = os.path.join("models", f"shop_v{SHOP_OBS_VERSION}", "latest.zip")
 
 
 def play_one_run(env, model):
@@ -47,7 +54,14 @@ def main():
         print(f"No trained brain found at {MODEL}. Run train.py first.")
         return
     model = PPO.load(MODEL, device="cpu")
-    env = BrotatoEnv(speed=SPEED, verbose=False)
+    if os.path.exists(SHOP_MODEL):
+        shop_model = MaskablePPO.load(SHOP_MODEL, device="cpu")
+        shop = FrozenShop(shop_model, deterministic=not DICE)
+        print(f"Shop brain: {SHOP_MODEL} ({shop_model.num_timesteps} decisions of training).")
+    else:
+        shop = RandomShop()
+        print(f"No shop brain at {SHOP_MODEL} yet: level ups, crates and the shop are picked at random.")
+    env = BrotatoEnv(speed=SPEED, verbose=False, watch=True, shop=shop)
     style = "rolling the dice like in training" if DICE else "always taking its best move"
     print(f"Watching {MODEL} ({model.num_timesteps} turns of training) at {SPEED:g}x, {style}.")
     print("Start Brotato now. Stop with Ctrl+C.")
