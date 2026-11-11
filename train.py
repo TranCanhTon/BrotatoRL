@@ -310,6 +310,12 @@ def main():
         shop_thread.join(timeout=120)
         if shop_thread.is_alive():
             print("[train] WARNING: the shop brain did not stop in time, it was NOT saved this session")
+        try:
+            import shop_report
+            print("\n[train] what the shop brain picked this session (python shop_report.py for all sessions):")
+            shop_report.main(only_last=True)
+        except Exception as error:
+            print(f"[train] could not print the shop report: {error}")
         env.close()
 
 

@@ -252,6 +252,8 @@ It is never told which items are good. The only thing it learns from is **how ma
 
 **Runs still in progress at a learning pause:** for those picks the score uses the real waves cleared so far plus the judge's guess for the rest. That part is less exact than waiting for the run to end, mostly in the first nights while the judge is still bad at guessing. It evens out because finished runs keep correcting the judge. A bigger batch (for example 1024 decisions) would guess less but learn only 2 to 3 times per night instead of about 10.
 
+**How to see what it prefers:** `python shop_report.py` (all sessions side by side) or `python shop_report.py last`. `train.py` also prints the latest session's report when it stops. It reads `decisions.jsonl` and `items_report.json` only, so it can run during training. Sections: results per session, level up pick rate per stat (25% = random), shop buy rate for items that raise or lower each stat, habits (gold left when leaving, buys, rerolls and locks per shop, crates taken) and the most bought items.
+
 **How to see it working:**
 * The `[shop] run over` lines: fewer pointless locks and rerolls, less gold left unspent.
 * TensorBoard `shop_v1`: `ep_rew_mean` (reward per run) going up, `explained_variance` (how well the judge guesses) rising towards 0.5 and above, `entropy_loss` (how random the picks still are) slowly falling.
@@ -281,6 +283,7 @@ The movement brain and the shop brain share no network. They see the same stats 
 | `rule_bot.py` | Phase 3 baseline: a hand written bot that dodges, collects materials and avoids walls. Does not learn. Same output as `run_random.py`, so the two scores compare directly |
 | `train.py` | The learning AI (PPO). Trains for N minutes, saves the brain to `models/v2/`, continues from it next time, keeps the best brain, writes `runs_v2.csv`, `deaths_v2.jsonl`, TensorBoard graphs and `train_log.txt` |
 | `shop_env.py` | The shop brain: its layout, rewards, the bridge between the game thread and the learning thread, a random shop (for `run_random.py`, `rule_bot.py`, `listen.py`) and a frozen one (for `watch.py`) |
+| `shop_report.py` | What the shop brain prefers: pick rate per stat on level ups and in the shop, habits and results, per training session |
 | `scan_items.py` | Reads every item file in the decompiled game and writes `items_report.json` (id, tier, price, tags, every effect). Used to build the item pool |
 | `watch.py` | Loads the saved brains (movement latest or best, shop latest) and plays with no learning, so you can watch what they learned. Menus are clicked slowly and the button about to be pressed lights up first |
 | `run_random.py` | Phase 2 final test: random moves play runs through `brotato_env.py` for N minutes, prints one line per run, a run report (everything the autopilot bought, merged, picked on level ups and took from crates, with each item's stats, plus the final character stats) and a summary |
