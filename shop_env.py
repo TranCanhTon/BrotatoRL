@@ -108,7 +108,8 @@ class RunTally:
         info = msg.get("info", {})
         self.decisions.append({"wave": info.get("wave"), "kind": msg["decision"], "gold": info.get("gold"),
                                "options": info.get("options"), "prices": info.get("prices"),
-                               "choice": int(choice), "did": choice_name(msg["decision"], choice)})
+                               "choice": int(choice), "did": choice_name(msg["decision"], choice),
+                               "stats": info.get("stats", {})})
 
     def summary(self):
         did = [d["did"] for d in self.decisions]

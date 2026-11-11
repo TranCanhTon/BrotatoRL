@@ -1201,12 +1201,19 @@ func _ask_brain(kind, things, prices, locked, mask, shop):
 		obs.append_array(_option_obs(thing, price, lock))
 		ids.append(str(thing.my_id) if thing != null else "")
 		price_list.append(price)
+	# readable stats for decisions.jsonl: only stats that differ from their normal value, short names
+	var stats_log = {}
+	for entry in SHOP_STATS:
+		var v = values[entry[0]]
+		if abs(v - entry[2]) > 0.001:
+			stats_log[entry[0].replace("stat_", "")] = stepify(v, 0.01)
+	stats_log["hp_now"] = RunData.get_player_current_health(0)
 	var msg = {
 		"decision": kind,
 		"obs": obs,
 		"mask": mask,
 		"info": {"shop_obs_version": SHOP_OBS_VERSION, "wave": RunData.current_wave,
-			"gold": RunData.get_player_gold(0), "options": ids, "prices": price_list},
+			"gold": RunData.get_player_gold(0), "options": ids, "prices": price_list, "stats": stats_log},
 	}
 	if _tcp.put_data((to_json(msg) + "\n").to_utf8()) != OK:
 		_drop_connection("send failed")
