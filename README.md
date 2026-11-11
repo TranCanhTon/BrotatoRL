@@ -14,7 +14,7 @@ A Godot mod inside the game sends what is happening on screen to Python, Python 
 | 2. Connection | Mod and Python talk, Python controls movement, speed up, autopilot, Gymnasium env | Built. Final 30 minute test left |
 | 3. Brain | Rule bot baseline, PPO agent, watch tool | Done: rule bot, `train.py` (10 minute test passed), `watch.py` |
 | 4. Training | Long training runs, watch, tune rewards and settings | In progress: brain v2 training from zero |
-| 5. Shop and higher waves | Shop brain: a second AI picks level ups, crates and shop actions | Built, first training next |
+| 5. Shop and higher waves | Shop brain: a second AI picks level ups, crates and shop actions | Built and tested in the real game, first long training next |
 
 Already working: the autopilot plays full runs back to back (random moves, the rule bot or the AI steering), and the AI trains through it.
 
@@ -31,6 +31,8 @@ mod_main.gd  ── 161 numbers (JSON line) ─▶ listen.py / brotato_env.py
 1. Every **0.1 s of game time** the mod freezes the game and sends 161 numbers describing the situation.
 2. Python picks one of 9 moves and sends it back, together with the game speed.
 3. The mod holds that move for the next 0.1 s and the game continues.
+
+Between waves the mod asks a second AI, the **shop brain**, a question for every pick (level up, crate, shop action): `{"decision": "shop", "obs": [479 numbers], "mask": [10 true/false], "info": {...}}`, answered with `{"choice": n}`. See "The shop brain" below.
 
 This "taking turns" design (lockstep) guarantees every move answers exactly the situation the AI saw, even when Python is slow. If Python does not answer within 20 s (long enough for the AI to pause and learn during training), the mod lets go of the keys, returns to normal speed and keeps trying to reconnect.
 
@@ -219,7 +221,53 @@ Each option: present, SMG, other weapon, price / gold, affordable, locked, tier,
 
 **Reward:** +1 for every wave cleared after a decision, +2 extra for boss waves (11, 15, 18, 20), +5 extra for winning. Nothing for dying: the waves just stop coming.
 
-**Training:** runs in its own thread inside `train.py`. Learns every 256 decisions (about every 2 to 3 runs), batches of 64, 10 passes, learning rate 0.0003, gamma 0.99 per decision (about the next 15 waves count), entropy bonus 0.01, network [128, 128]. Saved in `models/shop_v1/` (`latest.zip`, checkpoints every 2,000 decisions). TensorBoard run name `shop_v1`. After every run it prints one line (decisions, items bought, locks, rerolls, crates taken) and writes the run's questions and picks to `decisions.jsonl`.
+### How the shop brain learns
+
+It is never told which items are good. The only thing it learns from is **how many waves the run cleared after each pick**. It works out which picks help by comparing thousands of decisions.
+
+**Two parts, one network each:**
+* **The judge** looks at the 479 numbers (wave, all stats, gold...) and guesses how many more waves this run will clear from this exact moment.
+* **The chooser** makes the pick (buy, lock, reroll, leave, level up card, take or recycle).
+
+**The cycle:**
+
+1. **Playing.** At every decision (not once per wave: one wave can have 5 to 8 decisions), the judge makes its guess and it is written down next to the pick. Nothing is learned yet. The rewards come in as the run goes on: +1 per wave cleared, +2 extra for boss waves, +5 extra for a win.
+2. **Learning pause, every 256 decisions** (about every 2 to 3 runs, often in the middle of a run). For each of the 256 decisions:
+   * **Score** = what actually happened after the pick, minus what the judge guessed at that moment. Waves close to the pick count fully, later ones a little less (gamma 0.99 per decision, so roughly the next 15 waves matter).
+   * **The chooser adjusts:** a plus score makes that pick a bit more likely next time *in a similar situation*, a minus score a bit less likely. A bigger score gives a bigger nudge.
+   * **The judge adjusts** so its guesses get closer to what really happened.
+   * It goes over the 256 decisions 10 times in chunks of 64, then throws them away and plays the next 256.
+3. **Repeat.**
+
+**Example:** wave 6 shop, HP 25, damage 10%, 40 gold. The judge guesses "about 5 more waves". It buys an item that gives +12% damage and the run clears 9 more waves: score +4, so that kind of pick becomes more likely in situations like this. In another run, same situation, it buys +5 luck and clears 2 more waves: score -3, so less likely. One run proves nothing (it may have died from bad movement or bad luck), but over thousands of decisions luck evens out and the picks that really help keep landing on the plus side.
+
+**Why the judge is needed:** without it, every pick in a good run would look good, the bad ones too. The judge separates "the run went well" from "this pick made it go better than builds like this usually do". It is trained on exactly the comparison "stats at wave N against how far the run got", at the same wave, so a run's bigger stats from simply living longer don't fool it.
+
+**Why it learns stats, not item names:** it never sees "Cyclops Worm", only the try on numbers (damage +12%, range -12). So what it learns about "+damage at wave 6 with low damage" carries over to every item that gives damage, even rare ones.
+
+**Brakes:**
+* **Small steps** (PPO clipping, 0.2): one learning round can only change a pick's chance a little, so one lucky run can't flip its behavior.
+* **Curiosity bonus** (entropy 0.01): it keeps a small chance of trying other picks, so it can still find something better.
+* **Masks:** impossible choices (can't afford, wrong screen) are never picked, so no time is wasted on them.
+
+**Runs still in progress at a learning pause:** for those picks the score uses the real waves cleared so far plus the judge's guess for the rest. That part is less exact than waiting for the run to end, mostly in the first nights while the judge is still bad at guessing. It evens out because finished runs keep correcting the judge. A bigger batch (for example 1024 decisions) would guess less but learn only 2 to 3 times per night instead of about 10.
+
+**How to see it working:**
+* The `[shop] run over` lines: fewer pointless locks and rerolls, less gold left unspent.
+* TensorBoard `shop_v1`: `ep_rew_mean` (reward per run) going up, `explained_variance` (how well the judge guesses) rising towards 0.5 and above, `entropy_loss` (how random the picks still are) slowly falling.
+* The average death wave climbing. That is the real goal.
+
+Expect the first nights to be worse than with the old hand written rules (the brain starts out picking at random) and the first clear improvements after 2 or 3 nights.
+
+### Shop brain settings and files
+
+**Training:** runs in its own thread inside `train.py`. Learns every 256 decisions, batches of 64, 10 passes, learning rate 0.0003, gamma 0.99 per decision, entropy bonus 0.01, network [128, 128] for the judge and the chooser each (about 158,000 numbers in total). TensorBoard run name `shop_v1`. After every run it prints one line (decisions, items bought, locks, rerolls, crates taken).
+
+**`models/shop_v1/latest.zip`** (about 650 KB, saved when `train.py` stops; checkpoints every 2,000 decisions): a normal zip with `policy.pth` (the judge's and the chooser's weights, no rules or item lists), `policy.optimizer.pth` (learning momentum, so the next session continues smoothly), `data` (readable settings; `num_timesteps` = decisions learned so far) and version info.
+
+**`decisions.jsonl`:** one line per run (time, how it ended, last wave) with every decision: wave, kind, gold, the options offered, prices, what it picked, and the build's stats at that moment (only stats that differ from normal, plus HP now). Meant for a readable check later: "stats at wave N against how far the run got".
+
+**Storage:** about 100 MB per 8 hour night, almost all of it movement brain checkpoints (2.6 MB every 20,000 turns). Old checkpoints can be deleted any time; `latest.zip` and `best.zip` are what training and watching need.
 
 The movement brain and the shop brain share no network. They see the same stats (both read them the same way) and both work towards the same goal, clearing as many waves as possible.
 
@@ -262,13 +310,13 @@ Tested with Brotato 1.2.0.1 (Default Public Version), mod loader 6.3.0, Windows,
 3. One of:
    * `python run_random.py 30 4` : random runs for 30 minutes at 4x through the Gymnasium env
    * `python rule_bot.py 30 4` : rule bot runs for 30 minutes at 4x (the baseline the AI has to beat)
-   * `python train.py 120 4` : train the AI for 2 hours at 4x (continues from the saved brain)
-   * `python watch.py` : watch the saved brain play at normal speed (`python watch.py 2` for 2x, `python watch.py 1 dice` to roll the dice like in training, `python watch.py 4 best` for the best brain)
+   * `python train.py 120 4` : train both brains (movement and shop) for 2 hours at 4x (continues from the saved brains)
+   * `python watch.py` : watch the saved brains play at normal speed, with the shop brain's picks printed and highlighted in the game (`python watch.py 2` for 2x, `python watch.py 1 dice` to roll the dice like in training, `python watch.py 4 best` for the best brain)
    * `python listen.py 1` : watch what the mod sends, at normal speed
 4. Start Brotato and don't touch anything.
 5. Stop with Ctrl+C.
 
-Game logs (useful when something breaks): `%APPDATA%\Brotato\logs\godot.log`. Every autopilot action is logged there with a `BrotatoAI autopilot:` prefix.
+Game logs (useful when something breaks): `%APPDATA%\Brotato\logs\godot.log`. Every autopilot action is logged there with a `BrotatoAI autopilot:` prefix, every shop brain pick with `BrotatoAI shop brain:`.
 
 ## Lessons learned
 
