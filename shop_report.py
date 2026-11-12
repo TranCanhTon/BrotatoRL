@@ -16,6 +16,7 @@ Sections:
        (and the same for items that lower it)
     4. Habits: gold left when leaving, rerolls and locks per shop, crates taken
     5. Most bought items in the latest session
+    6. Every run of the latest session: level ups, items bought, crates taken, build at the last shop
 
 A "session" is one train.py run: runs less than 30 minutes apart belong to the same session.
 """
@@ -285,6 +286,36 @@ def main(only_last=None):
     for item, n in most_bought(sessions[-1]):
         stats_text = ", ".join(f"{k} {v:+g}" for k, v in item_stats.get(item, {}).items())
         print(f"   {n:>3}x {item:<28} {stats_text}")
+
+    # 6. every run
+    print_runs(sessions[-1])
+
+
+def print_runs(runs):
+    """Every run of the session: death wave, level ups by stat, items bought, crate items taken,
+    and the build's main stats at the last shop."""
+    keys = ["max_hp", "percent_damage", "ranged_damage", "attack_speed", "armor", "dodge", "speed",
+            "hp_regeneration", "lifesteal", "crit_chance", "range", "luck", "harvesting"]
+    print(f"\n6. EVERY RUN in the session starting {runs[0]['_time'].strftime('%m-%d %H:%M')}")
+    for i, run in enumerate(runs, 1):
+        levels, bought, crates, last = Counter(), [], [], None
+        for d in run["decisions"]:
+            option = d["options"][d["choice"]] if d["choice"] < len(d["options"]) else ""
+            if d["kind"] == "level_up":
+                levels[upgrade_stat(option)] += 1
+            elif d["kind"] == "shop" and d["did"].startswith("buy"):
+                bought.append(option.replace("item_", ""))
+            elif d["kind"] == "crate" and d["did"] == "take":
+                crates.append(option.replace("item_", ""))
+            if d.get("stats"):
+                last = d
+        print(f"   run {i}: {run['end']} at wave {run['wave']}")
+        print("      level ups: " + (", ".join(f"{k} x{v}" for k, v in levels.most_common()) or "none"))
+        print("      bought: " + (", ".join(f"{k} x{v}" for k, v in Counter(bought).most_common()) or "nothing"))
+        print("      crates taken: " + (", ".join(crates) or "none"))
+        if last:
+            stats = last["stats"]
+            print(f"      build at the wave {last['wave']} shop: " + ", ".join(f"{k} {stats.get(k, 0):g}" for k in keys))
 
 
 if __name__ == "__main__":
