@@ -114,10 +114,11 @@ Since phase 5 a second AI, the **shop brain**, makes every pick between waves: w
 
 * **Level up:** picks one of the (up to 4) upgrades.
 * **Crate:** take or recycle. Weapons from crates are always recycled.
-* **Shop:** one action at a time: buy slot 1 to 4, lock slot 1 to 4, reroll, or leave. Weapons other than SMGs can't be bought. A 7th SMG can only be bought when the game can merge it into one it owns.
+* **Weapons first (SMG rules):** while under **6 weapons**, the SMG rules act before the brain gets a turn: buy the cheapest affordable SMG, or reroll to find one while gold minus the reroll price still covers a basic SMG (the old money rule, at most 10 rerolls per visit). Without this the brain spent most gold on random items and had about half the firepower of the old rules by wave 8.
+* **Shop (brain):** one action at a time: buy slot 1 to 4, lock slot 1 to 4, reroll, or leave. Weapons other than SMGs can't be bought. A 7th SMG can only be bought when the game can merge it into one it owns.
 * **After it leaves** (or after 40 actions in one visit), the **SMG rules** spend what is left:
-  * Under **6 weapons**: buy the cheapest SMG it can afford.
-  * At 6 weapons: buy an SMG the game can merge into one it owns, or sell the weakest SMG for a higher tier one if gold plus the sale covers it.
+  * Under 6 weapons: buy the cheapest SMG it can afford, or reroll for one (same money rule).
+  * At 6 weapons: buy an SMG the game can merge into one it owns, or sell the weakest SMG for a higher tier one if gold plus the sale covers it, or reroll for a matching SMG while one can still merge.
   * Then lock SMGs it wanted but could not afford, and press Go.
 * After the last wave, level ups take the first option (the run is already over for the brain) and the shop restarts the run.
 
@@ -261,6 +262,21 @@ It is never told which items are good. The only thing it learns from is **how ma
 
 Expect the first nights to be worse than with the old hand written rules (the brain starts out picking at random) and the first clear improvements after 2 or 3 nights.
 
+### Head start: copying a teacher first
+
+Starting from random picks was too slow: after about 6,000 decisions it still picked level ups at random and runs averaged wave 8.4 (the old rules: 14.4). So the brain first learns to copy a **teacher**, then keeps learning on its own from there and is free to drift away from the teacher wherever that works better.
+
+**The teacher** (`TeacherShop` in `shop_env.py`) uses only Ton's stat priority, no item lists. It judges every item by its try on numbers:
+* **Priority:** max HP, damage %, armor, ranged damage, attack speed, dodge, speed, crit chance, HP regen.
+* **Level up:** the card whose stat sits highest in the list.
+* **Shop:** the affordable item whose best priority stat ranks highest, skipping items that lower any priority stat or have a hidden downside (lower HP at the next wave start like Weird Ghost, HP lost per second like Blood Donation). Money rule: after a buy, leave once gold drops below what was just paid; reroll only if gold minus the reroll price still covers the target (the last price paid, or a basic SMG). Before leaving, lock wanted items it can't afford.
+* **Crates:** take, except items with a hidden downside.
+
+**How:**
+1. `python train.py 120 4 teach`: the teacher makes the shop picks (the movement brain trains as usual) and every pick is recorded in `teacher_data.jsonl` with the 479 numbers, what was allowed, the teacher's pick and the waves cleared after it.
+2. At the end it runs `pretrain_shop.py` by itself: the chooser is trained to make the teacher's pick the most likely one, and the judge to predict the waves that followed each pick. It prints how often the brain agrees with the teacher (aim: 80% or more). The previous brain is kept as `models/shop_v1/latest_before_teacher.zip`.
+3. `python train.py 480 4`: normal training, starting from the copied behavior.
+
 ### Shop brain settings and files
 
 **Training:** runs in its own thread inside `train.py`. Learns every 256 decisions, batches of 64, 10 passes, learning rate 0.0003, gamma 0.99 per decision, entropy bonus 0.01, network [128, 128] for the judge and the chooser each (about 158,000 numbers in total). TensorBoard run name `shop_v1`. After every run it prints one line (decisions, items bought, locks, rerolls, crates taken).
@@ -283,6 +299,7 @@ The movement brain and the shop brain share no network. They see the same stats 
 | `rule_bot.py` | Phase 3 baseline: a hand written bot that dodges, collects materials and avoids walls. Does not learn. Same output as `run_random.py`, so the two scores compare directly |
 | `train.py` | The learning AI (PPO). Trains for N minutes, saves the brain to `models/v2/`, continues from it next time, keeps the best brain, writes `runs_v2.csv`, `deaths_v2.jsonl`, TensorBoard graphs and `train_log.txt` |
 | `shop_env.py` | The shop brain: its layout, rewards, the bridge between the game thread and the learning thread, a random shop (for `run_random.py`, `rule_bot.py`, `listen.py`) and a frozen one (for `watch.py`) |
+| `pretrain_shop.py` | Head start: trains the shop brain to copy the teacher's recorded picks (`teacher_data.jsonl`). `train.py ... teach` runs it at the end |
 | `shop_report.py` | What the shop brain prefers: pick rate per stat on level ups and in the shop, habits and results, per training session |
 | `scan_items.py` | Reads every item file in the decompiled game and writes `items_report.json` (id, tier, price, tags, every effect). Used to build the item pool |
 | `watch.py` | Loads the saved brains (movement latest or best, shop latest) and plays with no learning, so you can watch what they learned. Menus are clicked slowly and the button about to be pressed lights up first |
@@ -314,6 +331,7 @@ Tested with Brotato 1.2.0.1 (Default Public Version), mod loader 6.3.0, Windows,
    * `python run_random.py 30 4` : random runs for 30 minutes at 4x through the Gymnasium env
    * `python rule_bot.py 30 4` : rule bot runs for 30 minutes at 4x (the baseline the AI has to beat)
    * `python train.py 120 4` : train both brains (movement and shop) for 2 hours at 4x (continues from the saved brains)
+   * `python train.py 120 4 teach` : the teacher (stat priority) picks in the shop and is recorded, then the shop brain learns to copy it
    * `python watch.py` : watch the saved brains play at normal speed, with the shop brain's picks printed and highlighted in the game (`python watch.py 2` for 2x, `python watch.py 1 dice` to roll the dice like in training, `python watch.py 4 best` for the best brain)
    * `python listen.py 1` : watch what the mod sends, at normal speed
 4. Start Brotato and don't touch anything.

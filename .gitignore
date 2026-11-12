@@ -23,3 +23,5 @@ deaths*.jsonl
 # Shop brain output and the item scan (made from the copyrighted game files)
 decisions.jsonl
 items_report.json
+
+teacher_data.jsonl

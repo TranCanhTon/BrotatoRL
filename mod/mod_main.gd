@@ -606,6 +606,9 @@ func _by_distance(a, b):
 
 var _ap_choice = -1       # the brain's answer for the current screen, kept until it is carried out (watch mode)
 var _ap_smg_phase = false # true after the brain chose "leave": the SMG rules spend what is left, then Go
+var _ap_brain_turn = false # true once the shop brain got its first question in this shop visit
+var _ap_smg_rerolls = 0   # rerolls the SMG rules did in this shop visit (SMG_REROLL_LIMIT)
+const SMG_REROLL_LIMIT = 10
 
 
 func _process(_delta):
@@ -625,6 +628,8 @@ func _process(_delta):
 		_ap_shop_actions = 0
 		_ap_choice = -1
 		_ap_smg_phase = false
+		_ap_brain_turn = false
+		_ap_smg_rerolls = 0
 		return
 	if now - _ap_scene_since < SCENE_SETTLE_MS or now - _ap_last_step < (WATCH_STEP_MS if _watch else AUTOPILOT_STEP_MS):
 		return
@@ -784,8 +789,10 @@ func _is_weapon(item):
 # ---------- shop ----------
 # One action per call (called every 0.25 s, 1.2 s in watch mode):
 #   1. after LAST_WAVE: restart the run
-#   2. the shop brain picks: buy slot 1-4, lock slot 1-4, reroll or leave
-#   3. after "leave" (or MAX_SHOP_ACTIONS): the SMG rules spend what is left, then Go
+#   2. under MAX_WEAPONS: the SMG rules go first (buy the cheapest affordable SMG, or reroll for one
+#      while gold minus the reroll price still covers an SMG), like the old hand written rules
+#   3. the shop brain picks: buy slot 1-4, lock slot 1-4, reroll or leave
+#   4. after "leave" (or MAX_SHOP_ACTIONS): the SMG rules spend what is left (merges at full slots), then Go
 func _ap_shop(shop):
 	_ap_shop_actions += 1
 	if RunData.current_wave >= LAST_WAVE:
@@ -799,6 +806,12 @@ func _ap_shop(shop):
 	if _ap_smg_phase:
 		_ap_smg_rules(shop, items_box)
 		return
+
+	# weapons first: until 6 SMGs, the SMG rules buy (and reroll for) SMGs before the brain's turn
+	if not _ap_brain_turn and RunData.get_player_weapons(0).size() < MAX_WEAPONS:
+		if _ap_smg_first(shop, items_box):
+			return
+	_ap_brain_turn = true
 
 	var slots = _shop_slots(items_box)
 	if _ap_choice < 0:
@@ -869,6 +882,56 @@ func _ap_shop(shop):
 		_ap_smg_phase = true
 
 
+# Under MAX_WEAPONS, before the brain: buy the cheapest affordable SMG, or reroll to find one while
+# gold minus the reroll price still covers a basic SMG (the old money rule). Returns true if it acted.
+func _ap_smg_first(shop, items_box):
+	var gold = RunData.get_player_gold(0)
+	var pick = _ap_find_smg(items_box, gold)
+	if pick != null:
+		if _watch_show(pick._button):
+			return true
+		print("BrotatoAI autopilot: buying ", pick.item_data.my_id, " for ", pick.value, " (SMGs first)")
+		_log_action("bought", pick.item_data, pick.value)
+		items_box.on_shop_item_buy_button_pressed(pick)
+		return true
+	return _ap_smg_reroll(shop, "for an SMG")
+
+
+# Rerolls to find an SMG if gold minus the reroll price still covers a basic SMG
+# (at most SMG_REROLL_LIMIT per visit). Returns true if it rerolled (or highlighted the button).
+func _ap_smg_reroll(shop, why):
+	var gold = RunData.get_player_gold(0)
+	var reroll_price = shop._reroll_price[0]
+	if _ap_smg_rerolls >= SMG_REROLL_LIMIT or gold - reroll_price < _basic_smg_price():
+		return false
+	if _watch_show(shop._get_reroll_button(0)):
+		return true
+	_ap_smg_rerolls += 1
+	print("BrotatoAI autopilot: rerolling for ", reroll_price, " (", why, ")")
+	shop._on_RerollButton_pressed(0)
+	return true
+
+
+# True if some SMG we own can still be merged (below the highest tier).
+func _can_still_merge():
+	for weapon in RunData.get_player_weapons(0):
+		if WEAPON_ID in str(weapon.my_id) and weapon.tier < 3:
+			return true
+	return false
+
+
+# What the cheapest SMG we own would cost at this wave (the game's own price formula).
+# Used as "enough for one SMG" in the reroll rule.
+func _basic_smg_price():
+	var cheapest = null
+	for weapon in RunData.get_player_weapons(0):
+		if WEAPON_ID in str(weapon.my_id) and (cheapest == null or weapon.value < cheapest.value):
+			cheapest = weapon
+	if cheapest == null:
+		return 0
+	return ItemService.get_value(RunData.current_wave, cheapest.value, 0, true, true, cheapest.my_id_hash)
+
+
 # The first N_SLOTS shop items that can still be bought (null where a slot is empty or sold).
 func _shop_slots(items_box):
 	var slots = []
@@ -922,6 +985,9 @@ func _ap_smg_rules(shop, items_box):
 				_ap_pending_upgrade = str(better.item_data.my_id)
 				shop._on_item_discard_button_pressed(weakest, 0)
 				return
+		# nothing to merge in this shop: reroll for a matching SMG (if one can still merge)
+		if _can_still_merge() and _ap_smg_reroll(shop, "for an SMG to merge"):
+			return
 	else:
 		var pick = _ap_find_smg(items_box, gold)
 		if pick != null:
@@ -930,6 +996,8 @@ func _ap_smg_rules(shop, items_box):
 			print("BrotatoAI autopilot: buying ", pick.item_data.my_id, " for ", pick.value)
 			_log_action("bought", pick.item_data, pick.value)
 			items_box.on_shop_item_buy_button_pressed(pick)
+			return
+		if _ap_smg_reroll(shop, "for an SMG"):
 			return
 
 	_ap_leave_shop(shop, "SMG rules done")
@@ -1213,7 +1281,9 @@ func _ask_brain(kind, things, prices, locked, mask, shop):
 		"obs": obs,
 		"mask": mask,
 		"info": {"shop_obs_version": SHOP_OBS_VERSION, "wave": RunData.current_wave,
-			"gold": RunData.get_player_gold(0), "options": ids, "prices": price_list, "stats": stats_log},
+			"gold": RunData.get_player_gold(0), "options": ids, "prices": price_list, "stats": stats_log,
+			"reroll_price": shop._reroll_price[0] if shop != null else 0, "smg_price": _basic_smg_price(),
+			"weapons": RunData.get_player_weapons(0).size()},
 	}
 	if _tcp.put_data((to_json(msg) + "\n").to_utf8()) != OK:
 		_drop_connection("send failed")

@@ -7,6 +7,8 @@ and waits for {"choice": n}. brotato_env.py receives these questions (they arriv
 movement brain's turns) and hands them to a "shop" object from this file:
 
     RandomShop      picks a random allowed choice (run_random.py, rule_bot.py, listen.py)
+    TeacherShop     Ton's stat priority (no item lists); records every pick in teacher_data.jsonl so the
+                    shop brain can learn to copy them first (train.py ... teach, then pretrain_shop.py)
     FrozenShop      a trained shop brain that does not learn (watch.py)
     ShopBridge      passes questions to ShopEnv, where MaskablePPO learns (train.py)
 
@@ -44,7 +46,22 @@ REWARD_BOSS_WAVE = 2.0           # extra
 BOSS_WAVES = (11, 15, 18, 20)
 REWARD_WON = 5.0                 # extra
 
-DECISIONS_FILE = "decisions.jsonl"   # one line per run: every question, what was offered, what it picked
+# the 44 stats in the obs, in the mod's order (SHOP_STATS in mod_main.gd)
+SHOP_STAT_NAMES = [
+    "stat_max_hp", "stat_hp_regeneration", "stat_lifesteal", "stat_percent_damage", "stat_melee_damage",
+    "stat_ranged_damage", "stat_elemental_damage", "stat_attack_speed", "stat_crit_chance", "stat_engineering",
+    "stat_range", "stat_armor", "stat_dodge", "stat_speed", "stat_luck", "stat_harvesting", "consumable_heal",
+    "xp_gain", "pickup_range", "items_price", "explosion_damage", "explosion_size", "bounce", "piercing",
+    "piercing_damage", "damage_against_bosses", "structure_attack_speed", "structure_range",
+    "burning_cooldown_reduction", "burning_spread", "knockback", "chance_double_gold", "free_rerolls", "trees",
+    "number_of_enemies", "enemy_speed", "reroll_price", "enemy_health", "enemy_damage", "lose_hp_per_second",
+    "hp_start_next_wave", "hp_start_wave", "gold_drops", "harvesting_growth",
+]
+assert len(SHOP_STAT_NAMES) == N_STATS
+STAT_INDEX = {name: i for i, name in enumerate(SHOP_STAT_NAMES)}
+
+DECISIONS_FILE = "decisions.jsonl"
+TEACHER_FILE = "teacher_data.jsonl"   # one line per run: every (numbers, allowed, teacher's pick, reward after it)   # one line per run: every question, what was offered, what it picked
 ANSWER_TIMEOUT = 15.0            # seconds the game waits for the shop brain before a random pick (mod gives up at 20)
 
 
@@ -262,3 +279,138 @@ class ShopEnv(gym.Env):
                 return self.bridge.to_brain.get(timeout=0.5)
             except queue.Empty:
                 continue
+
+
+# ---------- the teacher: Ton's stat priority (no item lists) ----------
+# Level ups: the card whose best stat sits highest in TEACHER_PRIORITY. Shop: the affordable item whose best
+# priority stat ranks highest and that lowers none of them and has no hidden downside (TEACHER_BAD), with the
+# money rule (after a buy, leave once gold drops below what was just paid; reroll only if gold minus the reroll
+# price still covers the target). Before leaving, lock wanted items it can't afford. Crates: take, except items
+# with a hidden downside. SMGs come from the mod's rules. Items are judged only by their stats (try on numbers).
+TEACHER_PRIORITY = ["max_hp", "percent_damage", "armor", "ranged_damage", "attack_speed", "dodge", "speed",
+                    "crit_chance", "hp_regeneration"]
+# hidden downsides, by stat: -1 = bad if the item lowers it, +1 = bad if it raises it
+TEACHER_BAD = {"hp_start_next_wave": -1, "hp_start_wave": -1, "lose_hp_per_second": +1}
+
+
+def option_view(obs, slot):
+    """(present, locked, {stat name: change}) for one option, read from the obs numbers."""
+    base = OPTIONS + slot * OPTION_SIZE
+    header = obs[base:base + 8]
+    changes = obs[base + 8:base + 8 + N_STATS]
+    return header[0] > 0.5, header[5] > 0.5, changes
+
+
+def has_bad_stat(changes):
+    return any(changes[STAT_INDEX[stat]] * direction > 0 for stat, direction in TEACHER_BAD.items())
+
+
+def teacher_rank(changes):
+    """Position in TEACHER_PRIORITY of the item's best stat. 999 = don't buy (lowers a priority stat or has a
+    hidden downside)."""
+    if has_bad_stat(changes):
+        return 999
+    rank = 999
+    for i, stat in enumerate(TEACHER_PRIORITY):
+        value = changes[STAT_INDEX["stat_" + stat]]
+        if value < 0:
+            return 999
+        if value > 0 and i < rank:
+            rank = i
+    return rank
+
+
+class TeacherShop:
+    """Answers with Ton's old rules and records every pick for pretrain_shop.py."""
+
+    def __init__(self, path=TEACHER_FILE, verbose=True):
+        self.path = path
+        self.verbose = verbose
+        self._samples = []      # this run: {"obs", "mask", "action", "reward"}
+        self._reward = 0.0      # waves cleared since the last pick
+        self._visit = None      # (wave) of the current shop visit, for the money rule
+        self._last_buy = 0
+        self._tally = RunTally()
+
+    def decide(self, msg):
+        obs, mask = read_question(msg)
+        kind = msg["decision"]
+        info = msg.get("info", {})
+        if kind == "level_up":
+            choice = self._level_up(obs, mask)
+        elif kind == "crate":
+            choice = 1 if (has_bad_stat(option_view(obs, 0)[2]) and mask[1]) else 0
+        else:
+            choice = self._shop(obs, mask, info)
+        if not mask[choice]:
+            choice = random_choice(mask)
+        if self._samples:
+            self._samples[-1]["reward"] += self._reward
+        self._reward = 0.0
+        self._samples.append({"obs": [round(float(x), 4) for x in obs], "mask": [bool(m) for m in mask],
+                              "action": int(choice), "reward": 0.0})
+        self._tally.add(msg, choice)
+        return choice
+
+    def _level_up(self, obs, mask):
+        for stat in TEACHER_PRIORITY:
+            for slot in range(N_SLOTS):
+                present, _, changes = option_view(obs, slot)
+                if mask[slot] and present and changes[STAT_INDEX["stat_" + stat]] > 0:
+                    return slot
+        return next(i for i in range(N_SLOTS) if mask[i]) if any(mask[:N_SLOTS]) else 0
+
+    def _shop(self, obs, mask, info):
+        wave = info.get("wave")
+        if self._visit != wave:          # new shop visit
+            self._visit = wave
+            self._last_buy = 0
+        ids = info.get("options", [""] * N_SLOTS)
+        prices = info.get("prices", [0] * N_SLOTS)
+        gold = info.get("gold", 0) or 0
+
+        # 1. money rule: after a buy, stop once gold drops below what was just paid
+        if self._last_buy > 0 and gold < self._last_buy:
+            return self._leave(obs, mask, ids, prices, gold)
+        # 2. best affordable item with priority stats
+        best, best_rank = None, 999
+        for slot in range(N_SLOTS):
+            if mask[slot] and ids[slot].startswith("item_"):
+                rank = teacher_rank(option_view(obs, slot)[2])
+                if rank < best_rank:
+                    best, best_rank = slot, rank
+        if best is not None:
+            self._last_buy = prices[best]
+            return best
+        # 3. reroll if it still leaves enough for the target
+        target = self._last_buy if self._last_buy > 0 else (info.get("smg_price") or 0)
+        if mask[CHOICE_REROLL] and gold - (info.get("reroll_price") or 0) >= target:
+            return CHOICE_REROLL
+        return self._leave(obs, mask, ids, prices, gold)
+
+    def _leave(self, obs, mask, ids, prices, gold):
+        """Lock one wanted item it can't afford (one per question), otherwise leave."""
+        for slot in range(N_SLOTS):
+            present, locked, changes = option_view(obs, slot)
+            if not present or locked or not ids[slot].startswith("item_") or gold >= prices[slot]:
+                continue
+            wanted = teacher_rank(changes) < 999
+            if wanted and mask[N_SLOTS + slot]:
+                return N_SLOTS + slot
+        return CHOICE_LEAVE
+
+    def on_wave_cleared(self, wave, last_wave):
+        self._reward += wave_reward(wave, last_wave)
+
+    def on_run_end(self, end_reason, wave):
+        if self._samples:
+            self._samples[-1]["reward"] += self._reward
+        self._reward = 0.0
+        if self._samples:
+            with open(self.path, "a", encoding="utf-8") as f:
+                f.write(json.dumps({"time": time.strftime("%Y-%m-%d %H:%M:%S"), "end": end_reason, "wave": wave,
+                                    "cut_short": end_reason not in ("died", "won"), "samples": self._samples}) + "\n")
+        if self.verbose:
+            print(f"[teacher] run over: {self._tally.summary()}, {len(self._samples)} picks recorded")
+        self._samples = []
+        self._tally.write(end_reason, wave)

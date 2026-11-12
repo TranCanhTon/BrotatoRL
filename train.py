@@ -36,10 +36,13 @@ from stable_baselines3.common.callbacks import BaseCallback, CheckpointCallback
 from stable_baselines3.common.vec_env import DummyVecEnv, VecMonitor
 
 from brotato_env import BrotatoEnv, OBS_SIZE, OBS_VERSION
-from shop_env import ShopBridge, ShopEnv, SHOP_OBS_SIZE, SHOP_OBS_VERSION
+from shop_env import ShopBridge, ShopEnv, TeacherShop, SHOP_OBS_SIZE, SHOP_OBS_VERSION
 
 MINUTES = float(sys.argv[1]) if len(sys.argv) > 1 else 10.0
 SPEED = float(sys.argv[2]) if len(sys.argv) > 2 else 4.0
+# "teach": Ton's old rules make the shop picks (the shop brain does not learn), every pick is recorded in
+# teacher_data.jsonl, and at the end the shop brain is trained to copy them (pretrain_shop.py)
+TEACH = "teach" in sys.argv[3:]
 
 MODEL_DIR = os.path.join("models", f"v{OBS_VERSION}")
 LATEST = os.path.join(MODEL_DIR, "latest.zip")
@@ -283,10 +286,17 @@ def main():
     os.makedirs(MODEL_DIR, exist_ok=True)
     os.makedirs(SHOP_DIR, exist_ok=True)
     bridge = ShopBridge()
-    shop_model = make_or_load_shop_model(bridge)
-    shop_thread = threading.Thread(target=run_shop_brain, args=(bridge, shop_model), daemon=True)
-    shop_thread.start()
-    env = BrotatoEnv(speed=SPEED, verbose=False, shop=bridge)
+    shop_thread = None
+    if TEACH:
+        print("[train] teach mode: the old rules pick in the shop and every pick is recorded in teacher_data.jsonl. "
+              "The shop brain copies them at the end.")
+        shop = TeacherShop()
+    else:
+        shop_model = make_or_load_shop_model(bridge)
+        shop_thread = threading.Thread(target=run_shop_brain, args=(bridge, shop_model), daemon=True)
+        shop_thread.start()
+        shop = bridge
+    env = BrotatoEnv(speed=SPEED, verbose=False, shop=shop)
     model = make_or_load_model(env)
     print(f"[train] training for {MINUTES:g} minutes at {SPEED:g}x. Start Brotato now, then don't touch anything.")
     print("[train] the game freezes for a few seconds every 2048 turns while the AI learns, that's normal.")
@@ -306,10 +316,11 @@ def main():
     finally:
         model.save(LATEST)
         print(f"[train] {time.strftime('%H:%M:%S')} saved to {LATEST} ({model.num_timesteps} turns learned in total)")
-        bridge.stop()
-        shop_thread.join(timeout=120)
-        if shop_thread.is_alive():
-            print("[train] WARNING: the shop brain did not stop in time, it was NOT saved this session")
+        if shop_thread is not None:
+            bridge.stop()
+            shop_thread.join(timeout=120)
+            if shop_thread.is_alive():
+                print("[train] WARNING: the shop brain did not stop in time, it was NOT saved this session")
         try:
             import shop_report
             print("\n[train] what the shop brain picked this session (python shop_report.py for all sessions):")
@@ -317,6 +328,13 @@ def main():
         except Exception as error:
             print(f"[train] could not print the shop report: {error}")
         env.close()
+        if TEACH:
+            print("\n[train] now teaching the shop brain to copy the old rules (pretrain_shop.py)...")
+            try:
+                import pretrain_shop
+                pretrain_shop.main()
+            except Exception as error:
+                print(f"[train] copying failed: {error}. Run python pretrain_shop.py to try again.")
 
 
 if __name__ == "__main__":
